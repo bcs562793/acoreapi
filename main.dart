@@ -24,15 +24,6 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     'Chrome%2F122.0.0.0%20Safari%2F537.36'
     '&EIO=4&transport=websocket';
 
-const _nesineHeaders = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
-  'Accept': 'application/json, text/javascript, */*; q=0.01',
-  'Accept-Language': 'tr-TR,tr;q=0.9',
-  'Referer': 'https://www.nesine.com/iddaa/canli-iddaa-canli-bahis',
-  'X-Requested-With': 'XMLHttpRequest',
-  'Origin': 'https://www.nesine.com',
-};
-
 // MT=11 → Gol/Skor güncellemesi
 const _MT_SCORE = 11;
 
