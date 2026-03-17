@@ -81,6 +81,12 @@ Future<void> main() async {
   Timer.periodic(const Duration(minutes: 5), (_) =>
     print('📊 Takip:${_tracked.length} Gol:$_goalCount Yaz:$_writeCount'));
 
+  // 28dk sonra temiz çık — cron yeniden başlatır
+  Timer(const Duration(minutes: 28), () {
+    print('⏰ 28dk doldu, temiz çıkış');
+    exit(0);
+  });
+
   // WS döngüsü
   while (true) {
     try { await _connect(); } catch (e) { print('❌ WS: $e'); }
