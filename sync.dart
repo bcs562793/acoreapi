@@ -66,10 +66,13 @@ Future<void> main() async {
     for (final sb in sbList) {
       final s = (_sim(nHome, (sb['home_team'] ?? '').toString()) +
                  _sim(nAway, (sb['away_team'] ?? '').toString())) / 2;
-      if (s > bestScore && s >= 0.55) { bestScore = s; best = sb; }
+      if (s > bestScore && s >= 0.45) { bestScore = s; best = sb; }
     }
 
-    if (best == null) { skipped++; continue; }
+    if (best == null || bestScore < 0.45) {
+      print('⚠️ Eşleşme yok: $nHome vs $nAway (best: ${bestScore.toStringAsFixed(2)})');
+      skipped++; continue;
+    }
 
     final fid = best['fixture_id'] as int;
     print('🔗 bid=$bid ↔ fixture=$fid (${bestScore.toStringAsFixed(2)}) $nHome vs $nAway');
