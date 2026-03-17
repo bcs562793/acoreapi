@@ -72,7 +72,7 @@ Future<void> main() async {
   // Tek session — kopunca 2dk bekle, Koyeb yeniden başlatır
   try { await _connect(); } catch (e) { print('❌ WS: $e'); }
   print('🔌 Session bitti, 2dk bekleniyor...');
-  await Future.delayed(const Duration(seconds: 60));
+  await Future.delayed(const Duration(seconds: 20));
   exit(1);
 }
 
