@@ -88,12 +88,11 @@ Future<void> main() async {
     exit(0);
   });
 
-  // WS döngüsü — kopunca 60sn bekle
-  while (true) {
-    try { await _connect(); } catch (e) { print('❌ WS: $e'); }
-    print('🔄 60sn sonra yeniden bağlanıyor...');
-    await Future.delayed(const Duration(seconds: 60));
-  }
+  // Tek session — kopunca 2dk bekle, Koyeb yeniden başlatır
+  try { await _connect(); } catch (e) { print('❌ WS: $e'); }
+  print('🔌 Session bitti, 2dk bekleniyor...');
+  await Future.delayed(const Duration(minutes: 2));
+  exit(1); // Koyeb restart için non-zero exit
 }
 
 // ── ADIM 1: Nesine maç listesi → Supabase eşleştir ────────────
