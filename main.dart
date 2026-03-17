@@ -15,7 +15,6 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     'Chrome%2F122.0.0.0%20Safari%2F537.36'
     '&EIO=4&transport=websocket';
 
-const _MT_SCORE = 6;  // Futbol golü (MT=11 basket/tenis)
 
 // nesine_bid → _SbMatch
 final Map<int, _SbMatch> _matches = {};
@@ -134,12 +133,22 @@ void _onEvent(String payload) {
     if (list[0] != 'LiveBets' || list[1] is! List) return;
     for (final item in list[1] as List) {
       if (item is! Map) continue;
-      if (item['MT'] != _MT_SCORE) continue;
+      // Sadece Football
       if ((item['sportype'] ?? '').toString().toLowerCase() != 'football') continue;
       final m = item['M'] as Map?;
       if (m == null) continue;
       final bid = _int(m['BID'] ?? item['bid']);
       if (bid == null) continue;
+
+      // H ve A sayısal ve makul bir futbol skoru ise işle
+      final h = _int(m['H']);
+      final a = _int(m['A']);
+      if (h == null || a == null) continue;   // sayı değilse atla
+      if (h > 30 || a > 30) continue;         // 30+ istatistik
+      if (m.containsKey('EN')) continue;      // EN=istatistik adı varsa atla
+      if (!m.containsKey('TS')) continue;     // TS yoksa skor event'i değil
+      if (m['ST'] != 1) continue;             // ST=1 aktif skor
+
       _onScore(bid, m);
     }
   } catch (_) {}
