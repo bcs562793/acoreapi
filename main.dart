@@ -186,13 +186,9 @@ Future<void> _syncMatches() async {
 Future<void> _connect() async {
   print('🔌 rt.nesine.com bağlanıyor...');
   _ws = IOWebSocketChannel.connect(Uri.parse(_wsUrl), headers: {
-    'Origin':          'https://www.nesine.com',
-    'Host':            'rt.nesine.com',
-    'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Pragma':          'no-cache',
-    'Cache-Control':   'no-cache',
-    'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits',
+    'Origin':        'https://www.nesine.com',
+    'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+    'Cache-Control': 'no-cache',
   });
 
   _pingTimer?.cancel();
