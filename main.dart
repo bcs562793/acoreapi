@@ -81,7 +81,7 @@ Future<void> main() async {
   // Tek session — kopunca 2dk bekle, Koyeb yeniden başlatır
   try { await _connect(); } catch (e) { print('❌ WS: $e'); }
   print('🔌 Session bitti, 2dk bekleniyor...');
-  await Future.delayed(const Duration(minutes: 2));
+  await Future.delayed(const Duration(seconds: 60));
   exit(1);
 }
 
@@ -92,7 +92,7 @@ Future<void> _syncMatches() async {
     final res = await http.post(
       Uri.parse('https://www.nesine.com/LiveScore/GetLiveBetResults'),
       headers: _nesineHeaders,
-    ).timeout(const Duration(seconds: 10));
+    ).timeout(const Duration(seconds: 20));
 
     if (res.statusCode != 200) return;
 
@@ -110,7 +110,7 @@ Future<void> _syncMatches() async {
           '?select=fixture_id,home_team,away_team,home_score,away_score,status_short'
           '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
       headers: _sbHeaders(),
-    ).timeout(const Duration(seconds: 10));
+    ).timeout(const Duration(seconds: 20));
 
     if (sbRes.statusCode != 200) return;
     final sbMatches = (jsonDecode(sbRes.body) as List).cast<Map>();
