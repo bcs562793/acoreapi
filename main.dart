@@ -158,7 +158,10 @@ void _onEvent(String payload) {
       }
 
       // Skor eventi
-      if (mt == _MT_SCORE) _onScore(bid, m);
+      if (mt == _MT_SCORE) {
+        print('⚽ MT=11 Football BID=$bid H=${m['H']} A=${m['A']} T=${m['T']}');
+        _onScore(bid, m);
+      }
     }
   } catch (_) {}
 }
@@ -171,8 +174,29 @@ void _tryMatch(int bid, Map m) {
 }
 
 void _onScore(int bid, Map m) {
-  final fid = _bidToFixture[bid];
-  if (fid == null) return;
+  // Yol 1: daha önce eşleştirilmiş BID
+  int? fid = _bidToFixture[bid];
+
+  // Yol 2: skor bazlı tahmin — H ve A skoru Supabase'dekiyle karşılaştır
+  if (fid == null) {
+    final h = _int(m['H']);
+    final a = _int(m['A']);
+    if (h != null && a != null) {
+      for (final sb in _sbMatches.values) {
+        if (sb.homeScore == h && sb.awayScore == a) {
+          fid = sb.fixtureId;
+          _bidToFixture[bid] = fid!;
+          print('🔗 Skor eşleşti: bid=$bid ↔ fixture=$fid ${sb.homeTeam} $h-$a ${sb.awayTeam}');
+          break;
+        }
+      }
+    }
+  }
+
+  if (fid == null) {
+    print('❓ Eşleşme yok: bid=$bid H=${m['H']} A=${m['A']}');
+    return;
+  }
 
   final sb = _sbMatches[fid];
   if (sb == null) return;
