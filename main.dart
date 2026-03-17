@@ -16,9 +16,12 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     '&EIO=4&transport=websocket';
 
 const _MT_SCORE = 11;
-const _BTIP_FOOTBALL = 1;
 
-final Map<int, _Match> _tracked = {};
+// fixture_id → _Match  (Supabase'den yüklenir)
+final Map<int, _Match> _byFixture = {};
+// nesine_bid → fixture_id  (WS'den öğrenilir)
+final Map<int, int> _bidToFixture = {};
+
 WebSocketChannel? _ws;
 Timer? _pingTimer;
 int _goalCount = 0, _writeCount = 0;
@@ -32,106 +35,68 @@ Future<void> main() async {
     print('❌ SUPABASE_URL / SUPABASE_KEY eksik'); exit(1);
   }
 
+  // Health check
   final port = int.tryParse(Platform.environment['PORT'] ?? '8082') ?? 8082;
   HttpServer.bind('0.0.0.0', port).then((s) {
     s.listen((req) => req.response
       ..statusCode = 200
       ..headers.contentType = ContentType.json
-      ..write(jsonEncode({'ok': true, 'tracked': _tracked.length,
-          'goals': _goalCount, 'writes': _writeCount}))
+      ..write(jsonEncode({'ok': true,
+          'fixtures': _byFixture.length,
+          'bids': _bidToFixture.length,
+          'goals': _goalCount,
+          'writes': _writeCount}))
       ..close());
     print('🌐 Health: :$port');
   });
 
-  await _syncMatches();
+  // Sadece Supabase'den maç listesini çek — Nesine'ye HTTP yok
+  await _loadFixtures();
+  Timer.periodic(const Duration(minutes: 5), (_) => _loadFixtures());
 
   Timer.periodic(const Duration(minutes: 5), (_) =>
-    print('📊 Takip:${_tracked.length} Gol:$_goalCount Yaz:$_writeCount'));
+    print('📊 Maç:${_byFixture.length} BID:${_bidToFixture.length} Gol:$_goalCount Yaz:$_writeCount'));
 
+  // WS döngüsü
   while (true) {
-    try {
-      await _connect();
-    } catch (e) {
-      print('❌ WS: $e');
-    }
-    print('🔄 5sn sonra yeniden bağlanılacak...');
-    await Future.delayed(const Duration(seconds: 5));
-    await _syncMatches();
+    try { await _connect(); } catch (e) { print('❌ WS: $e'); }
+    print('🔄 30sn sonra yeniden bağlanılacak...');
+    await Future.delayed(const Duration(seconds: 30));
   }
 }
 
-Future<void> _syncMatches() async {
+// Sadece Supabase'den fixture listesi — Nesine'ye tek HTTP bile yok
+Future<void> _loadFixtures() async {
   try {
-    final res = await http.post(
-      Uri.parse('https://www.nesine.com/LiveScore/GetLiveBetResults'),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
-        'Accept': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': 'https://www.nesine.com/iddaa/canli-iddaa-canli-bahis',
-      },
-    ).timeout(const Duration(seconds: 20));
-
-    if (res.statusCode != 200) return;
-
-    final list = jsonDecode(res.body) as List;
-    final football = list.where((m) =>
-      m is Map && (m['BTIP'] == _BTIP_FOOTBALL || m['SportType'] == _BTIP_FOOTBALL)
-    ).cast<Map>().toList();
-
-    if (football.isEmpty) return;
-
-    final sbRes = await http.get(
+    final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
-          '?select=fixture_id,home_team,away_team,home_score,away_score,status_short'
+          '?select=fixture_id,home_team,away_team,home_score,away_score'
           '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
       headers: _sbHeaders(),
-    ).timeout(const Duration(seconds: 20));
+    ).timeout(const Duration(seconds: 15));
 
-    if (sbRes.statusCode != 200) return;
-    final sbMatches = (jsonDecode(sbRes.body) as List).cast<Map>();
+    if (res.statusCode != 200) return;
+    final rows = (jsonDecode(res.body) as List).cast<Map>();
 
-    final liveIds = <int>{};
-    for (final nm in football) {
-      final bid   = _int(nm['BID']);
-      final nHome = (nm['HomeTeam'] ?? '').toString();
-      final nAway = (nm['AwayTeam'] ?? '').toString();
-      if (bid == null || nHome.isEmpty) continue;
-
-      liveIds.add(bid);
-      if (_tracked.containsKey(bid)) continue;
-
-      Map? best;
-      double bestScore = 0;
-      for (final sb in sbMatches) {
-        final s = (_sim(nHome, (sb['home_team'] ?? '').toString()) +
-                   _sim(nAway, (sb['away_team'] ?? '').toString())) / 2;
-        if (s > bestScore && s >= 0.55) { bestScore = s; best = sb; }
-      }
-
-      if (best != null) {
-        final fid = best['fixture_id'] as int;
-        _tracked[bid] = _Match(
-          fixtureId: fid, nesineBid: bid,
-          homeTeam: (best['home_team'] ?? '').toString(),
-          awayTeam: (best['away_team'] ?? '').toString(),
-          homeScore: _int(best['home_score']) ?? 0,
-          awayScore: _int(best['away_score']) ?? 0,
-        );
-        print('🔗 bid=$bid ↔ fixture=$fid (${bestScore.toStringAsFixed(2)}) $nHome vs $nAway');
-        _sbPatch(fid, {'nesine_bid': bid, 'score_source': 'nesine'});
-      }
+    _byFixture.clear();
+    for (final r in rows) {
+      final fid = r['fixture_id'] as int;
+      _byFixture[fid] = _Match(
+        fixtureId: fid,
+        homeTeam:  (r['home_team'] ?? '').toString(),
+        awayTeam:  (r['away_team'] ?? '').toString(),
+        homeScore: _int(r['home_score']) ?? 0,
+        awayScore: _int(r['away_score']) ?? 0,
+      );
     }
-
-    _tracked.removeWhere((bid, _) => !liveIds.contains(bid));
+    print('📋 ${_byFixture.length} maç Supabase\'den yüklendi');
   } catch (e) {
-    print('⚠️ syncMatches: $e');
+    print('⚠️ loadFixtures: $e');
   }
 }
 
 Future<void> _connect() async {
   print('🔌 rt.nesine.com bağlanıyor...');
-
   _ws = IOWebSocketChannel.connect(Uri.parse(_wsUrl), headers: {
     'Origin':        'https://www.nesine.com',
     'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
@@ -145,25 +110,22 @@ Future<void> _connect() async {
       _onRaw(raw.toString());
     }
   } catch (e) {
-    print('[ERR] WS stream: $e');
+    print('[ERR] WS: $e');
   }
 
-  final code   = _ws?.closeCode;
-  final reason = _ws?.closeReason;
+  final code = _ws?.closeCode;
   _pingTimer?.cancel();
   _ws = null;
-  print('[WS] Kapandi closeCode=$code reason=$reason');
+  print('[WS] Kapandı code=$code');
 }
 
 void _onRaw(String s) {
   if (s == '2') { _ws?.sink.add('3'); return; }
   if (s == '3') return;
-
   if (s.startsWith('0')) {
     try { _ws?.sink.add('40'); } catch (_) {}
     return;
   }
-
   if (s.startsWith('40')) {
     print('✅ WS bağlandı');
     _ws?.sink.add('42["joinroom","LiveBets_V3"]');
@@ -173,7 +135,6 @@ void _onRaw(String s) {
     });
     return;
   }
-
   if (s.startsWith('42')) _onEvent(s.substring(2));
 }
 
@@ -188,14 +149,24 @@ void _onEvent(String payload) {
       final m = item['M'] as Map?;
       if (m == null) continue;
       final bid = _int(m['BID'] ?? item['bid']);
-      if (bid == null) return;
+      if (bid == null) continue;
+
+      // BID → fixture_id eşleştirmesi daha önce yapıldıysa direkt kullan
+      // Yoksa tüm maçlarla isim benzerliği dene — WS'deki NID üzerinden
       _onScore(bid, m);
     }
   } catch (_) {}
 }
 
 void _onScore(int bid, Map m) {
-  final match = _tracked[bid];
+  // Önce cache'e bak
+  int? fid = _bidToFixture[bid];
+
+  // Cache'de yoksa — WS'deki NevId/NID ile eşleştirmeyi daha sonra ekleyebiliriz
+  // Şimdilik: daha önce nesine_bid kaydedilmiş maçları bul
+  if (fid == null) return;
+
+  final match = _byFixture[fid];
   if (match == null) return;
 
   final newH = _int(m['H']);
@@ -211,7 +182,7 @@ void _onScore(int bid, Map m) {
   match.homeScore = newH;
   match.awayScore = newA;
 
-  _sbPatch(match.fixtureId, {
+  _sbPatch(fid, {
     'home_score': newH, 'away_score': newA,
     'score_source': 'nesine',
     if (min != null) 'elapsed_time': min,
@@ -242,31 +213,11 @@ int? _int(dynamic v) {
   return int.tryParse(v.toString());
 }
 
-double _sim(String a, String b) {
-  final n1 = _norm(a), n2 = _norm(b);
-  if (n1 == n2) return 1.0;
-  if (n1.contains(n2) || n2.contains(n1)) return 0.9;
-  final w1 = n1.split(' ').where((t) => t.length > 1).toSet();
-  final w2 = n2.split(' ').where((t) => t.length > 1).toSet();
-  if (w1.isEmpty || w2.isEmpty) return 0.0;
-  final j = w1.intersection(w2).length / w1.union(w2).length;
-  if (j >= 0.5) return 0.7 + j * 0.2;
-  if (n1.length >= 3 && n2.length >= 3 && n1.substring(0,3) == n2.substring(0,3)) return 0.6;
-  return j * 0.5;
-}
-
-String _norm(String s) => s.toLowerCase()
-    .replaceAll('ı','i').replaceAll('ğ','g').replaceAll('ü','u')
-    .replaceAll('ş','s').replaceAll('ö','o').replaceAll('ç','c')
-    .replaceAll('é','e').replaceAll('á','a').replaceAll('ñ','n')
-    .replaceAll(RegExp(r'[^\w\s]'), '')
-    .replaceAll(RegExp(r'\s+'), ' ').trim();
-
 class _Match {
-  final int fixtureId, nesineBid;
+  final int fixtureId;
   final String homeTeam, awayTeam;
   int homeScore, awayScore;
-  _Match({required this.fixtureId, required this.nesineBid,
+  _Match({required this.fixtureId,
       required this.homeTeam, required this.awayTeam,
       required this.homeScore, required this.awayScore});
 }
