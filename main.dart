@@ -88,14 +88,12 @@ Future<void> main() async {
     exit(0);
   });
 
-  // Tek bağlantı — kopunca Actions yeniden başlatır
-  try {
-    await _connect();
-  } catch (e) {
-    print('❌ WS: $e');
+  // WS döngüsü — kopunca 60sn bekle
+  while (true) {
+    try { await _connect(); } catch (e) { print('❌ WS: $e'); }
+    print('🔄 60sn sonra yeniden bağlanıyor...');
+    await Future.delayed(const Duration(seconds: 60));
   }
-  print('🔌 Bağlantı kapandı, çıkılıyor...');
-  exit(0);
 }
 
 // ── ADIM 1: Nesine maç listesi → Supabase eşleştir ────────────
@@ -214,23 +212,15 @@ Future<void> _connect() async {
 }
 
 void _onRaw(String s) {
-  // Ham mesajı logla
-  print('RAW[${s.length}]: ${s.substring(0, s.length.clamp(0, 80))}');
-  
   if (s == '2') { _ws?.sink.add('3'); return; }
   if (s == '3') return;
   if (s.startsWith('0')) {
-    try {
-      final d = jsonDecode(s.substring(1)) as Map;
-      print('🤝 sid=${d['sid']}');
-      _ws?.sink.add('40');
-    } catch (e) { print('handshake err: \$e'); }
+    try { _ws?.sink.add('40'); } catch (_) {}
     return;
   }
   if (s.startsWith('40')) {
-    print('✅ WS bağlandı → joinroom LiveBets_V3');
+    print('✅ WS bağlandı');
     _ws?.sink.add('42["joinroom","LiveBets_V3"]');
-    print('📤 joinroom LiveBets_V3 gönderildi');
     return;
   }
   if (s.startsWith('42')) _onEvent(s.substring(2));
