@@ -16,12 +16,11 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     '&EIO=4&transport=websocket';
 
 const _MT_SCORE = 11;
+const _BTIP_FOOTBALL = 1;
 
-// bid → fixture_id (WS'den isim eşleştirme ile doldurulur)
+// bid → fixture_id
 final Map<int, int> _bidToFixture = {};
-// bid → _Match
-final Map<int, _Match> _bidToMatch = {};
-// fixture_id → _SbMatch (Supabase'den)
+// fixture_id → _SbMatch
 final Map<int, _SbMatch> _sbMatches = {};
 
 WebSocketChannel? _ws;
@@ -43,74 +42,108 @@ Future<void> main() async {
       ..statusCode = 200
       ..headers.contentType = ContentType.json
       ..write(jsonEncode({'ok': true,
-          'sb_matches': _sbMatches.length,
-          'matched_bids': _bidToFixture.length,
+          'sb': _sbMatches.length,
+          'bids': _bidToFixture.length,
           'goals': _goalCount,
           'writes': _writeCount}))
       ..close());
     print('🌐 Health: :$port');
   });
 
-  // Supabase'den maç listesini yükle
-  await _loadSbMatches();
-  Timer.periodic(const Duration(minutes: 5), (_) => _loadSbMatches());
+  // Nesine maç listesi → bid eşleştir
+  await _syncNesine();
+  Timer.periodic(const Duration(minutes: 10), (_) => _syncNesine());
   Timer.periodic(const Duration(minutes: 5), (_) =>
-    print('📊 SB:${_sbMatches.length} Eşleşen:${_bidToFixture.length} Gol:$_goalCount Yaz:$_writeCount'));
+    print('📊 SB:${_sbMatches.length} BID:${_bidToFixture.length} Gol:$_goalCount Yaz:$_writeCount'));
 
+  // WS döngüsü — kapanınca hemen yeniden bağlan
   while (true) {
     try { await _connect(); } catch (e) { print('❌ WS: $e'); }
-    print('🔄 30sn sonra yeniden bağlanılacak...');
-    await Future.delayed(const Duration(seconds: 30));
+    print('🔄 3sn sonra yeniden bağlanılacak...');
+    await Future.delayed(const Duration(seconds: 3));
   }
 }
 
-Future<void> _loadSbMatches() async {
+// Nesine maç listesi + Supabase eşleştirme
+Future<void> _syncNesine() async {
   try {
-    final res = await http.get(
+    // 1. Nesine'den futbol maçları
+    final nRes = await http.post(
+      Uri.parse('https://www.nesine.com/LiveScore/GetLiveBetResults'),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': 'https://www.nesine.com/iddaa/canli-iddaa-canli-bahis',
+      },
+    ).timeout(const Duration(seconds: 20));
+    if (nRes.statusCode != 200) return;
+
+    final nList = (jsonDecode(nRes.body) as List)
+        .where((m) => m is Map &&
+            (m['BTIP'] == _BTIP_FOOTBALL || m['SportType'] == _BTIP_FOOTBALL))
+        .cast<Map>().toList();
+
+    // 2. Supabase'den canlı maçlar
+    final sRes = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
           '?select=fixture_id,home_team,away_team,home_score,away_score'
           '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
       headers: _sbHeaders(),
     ).timeout(const Duration(seconds: 15));
+    if (sRes.statusCode != 200) return;
 
-    if (res.statusCode != 200) return;
-    final rows = (jsonDecode(res.body) as List).cast<Map>();
+    final sbList = (jsonDecode(sRes.body) as List).cast<Map>();
 
     _sbMatches.clear();
-    for (final r in rows) {
+    for (final r in sbList) {
       final fid = r['fixture_id'] as int;
       _sbMatches[fid] = _SbMatch(
         fixtureId: fid,
-        homeTeam:  (r['home_team'] ?? '').toString(),
-        awayTeam:  (r['away_team'] ?? '').toString(),
+        homeTeam: (r['home_team'] ?? '').toString(),
+        awayTeam: (r['away_team'] ?? '').toString(),
         homeScore: _int(r['home_score']) ?? 0,
         awayScore: _int(r['away_score']) ?? 0,
       );
     }
-    print('📋 ${_sbMatches.length} maç Supabase\'den yüklendi');
+
+    // 3. İsim benzerliği ile eşleştir
+    int matched = 0;
+    for (final nm in nList) {
+      final bid   = _int(nm['BID']);
+      final nHome = (nm['HomeTeam'] ?? '').toString();
+      final nAway = (nm['AwayTeam'] ?? '').toString();
+      if (bid == null || nHome.isEmpty) continue;
+      if (_bidToFixture.containsKey(bid)) continue;
+
+      Map? best; double bestScore = 0;
+      for (final sb in _sbMatches.values) {
+        final s = (_sim(nHome, sb.homeTeam) + _sim(nAway, sb.awayTeam)) / 2;
+        if (s > bestScore && s >= 0.55) { bestScore = s; best = {'fid': sb.fixtureId, 'h': sb.homeTeam, 'a': sb.awayTeam}; }
+      }
+      if (best != null) {
+        _bidToFixture[bid] = best['fid'] as int;
+        print('🔗 bid=$bid ↔ fixture=${best['fid']} (${bestScore.toStringAsFixed(2)}) $nHome vs $nAway');
+        matched++;
+      }
+    }
+    print('📋 SB:${_sbMatches.length} Nesine:${nList.length} Yeni eşleşme:$matched');
   } catch (e) {
-    print('⚠️ loadSbMatches: $e');
+    print('⚠️ syncNesine: $e');
   }
 }
 
 Future<void> _connect() async {
-  print('🔌 rt.nesine.com bağlanıyor...');
+  print('🔌 Bağlanıyor...');
   _ws = IOWebSocketChannel.connect(Uri.parse(_wsUrl), headers: {
     'Origin':        'https://www.nesine.com',
     'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
     'Cache-Control': 'no-cache',
   });
-
   _pingTimer?.cancel();
-
   try {
-    await for (final raw in _ws!.stream) {
-      _onRaw(raw.toString());
-    }
-  } catch (e) {
-    print('[ERR] WS: $e');
-  }
-
+    await for (final raw in _ws!.stream) { _onRaw(raw.toString()); }
+  } catch (e) { print('[ERR] $e'); }
   final code = _ws?.closeCode;
   _pingTimer?.cancel();
   _ws = null;
@@ -133,10 +166,7 @@ void _onRaw(String s) {
     });
     return;
   }
-  if (s.startsWith('42')) {
-    print('📨 ${s.substring(0, s.length.clamp(0, 120))}');
-    _onEvent(s.substring(2));
-  }
+  if (s.startsWith('42')) _onEvent(s.substring(2));
 }
 
 void _onEvent(String payload) {
@@ -145,58 +175,20 @@ void _onEvent(String payload) {
     if (list[0] != 'LiveBets' || list[1] is! List) return;
     for (final item in list[1] as List) {
       if (item is! Map) continue;
+      if (item['MT'] != _MT_SCORE) continue;
       if ((item['sportype'] ?? '').toString().toLowerCase() != 'football') continue;
-      final m   = item['M'] as Map?;
+      final m = item['M'] as Map?;
       if (m == null) continue;
       final bid = _int(m['BID'] ?? item['bid']);
       if (bid == null) continue;
-      final mt  = item['MT'];
-
-      // Eşleşme yoksa isim benzerliği ile bul
-      if (!_bidToFixture.containsKey(bid)) {
-        _tryMatch(bid, m);
-      }
-
-      // Skor eventi
-      if (mt == _MT_SCORE) {
-        print('⚽ MT=11 Football BID=$bid H=${m['H']} A=${m['A']} T=${m['T']}');
-        _onScore(bid, m);
-      }
+      _onScore(bid, m);
     }
   } catch (_) {}
 }
 
-void _tryMatch(int bid, Map m) {
-  // WS'deki maçta takım ismi yok, sadece BID var
-  // _bidToMatch'a ekle — ileride isim gelirse eşleştir
-  // Şimdilik Supabase'deki tüm maçlarla score bazlı tahmin yap
-  // MT=1 gibi status event'lerinde takım bilgisi gelebilir
-}
-
 void _onScore(int bid, Map m) {
-  // Yol 1: daha önce eşleştirilmiş BID
-  int? fid = _bidToFixture[bid];
-
-  // Yol 2: skor bazlı tahmin — H ve A skoru Supabase'dekiyle karşılaştır
-  if (fid == null) {
-    final h = _int(m['H']);
-    final a = _int(m['A']);
-    if (h != null && a != null) {
-      for (final sb in _sbMatches.values) {
-        if (sb.homeScore == h && sb.awayScore == a) {
-          fid = sb.fixtureId;
-          _bidToFixture[bid] = fid!;
-          print('🔗 Skor eşleşti: bid=$bid ↔ fixture=$fid ${sb.homeTeam} $h-$a ${sb.awayTeam}');
-          break;
-        }
-      }
-    }
-  }
-
-  if (fid == null) {
-    print('❓ Eşleşme yok: bid=$bid H=${m['H']} A=${m['A']}');
-    return;
-  }
+  final fid = _bidToFixture[bid];
+  if (fid == null) return;
 
   final sb = _sbMatches[fid];
   if (sb == null) return;
@@ -269,13 +261,6 @@ class _SbMatch {
   final int fixtureId;
   final String homeTeam, awayTeam;
   int homeScore, awayScore;
-  _SbMatch({required this.fixtureId,
-      required this.homeTeam, required this.awayTeam,
-      required this.homeScore, required this.awayScore});
-}
-
-class _Match {
-  final int bid;
-  final String homeTeam, awayTeam;
-  _Match({required this.bid, required this.homeTeam, required this.awayTeam});
+  _SbMatch({required this.fixtureId, required this.homeTeam,
+      required this.awayTeam, required this.homeScore, required this.awayScore});
 }
