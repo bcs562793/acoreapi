@@ -211,13 +211,17 @@ Future<void> _connect() async {
 }
 
 void _onRaw(String s) {
+  // Ham mesajı logla
+  print('RAW[${s.length}]: ${s.substring(0, s.length.clamp(0, 80))}');
+  
   if (s == '2') { _ws?.sink.add('3'); return; }
   if (s == '3') return;
   if (s.startsWith('0')) {
     try {
-      jsonDecode(s.substring(1)); // handshake parse
+      final d = jsonDecode(s.substring(1)) as Map;
+      print('🤝 sid=${d['sid']}');
       _ws?.sink.add('40');
-    } catch (_) {}
+    } catch (e) { print('handshake err: \$e'); }
     return;
   }
   if (s.startsWith('40')) {
