@@ -22,4 +22,4 @@ jobs:
         run: dart pub get
 
       - name: Run WS test (60sn)
-        run: dart run bin/main.dart
+        run: dart run main.dart
