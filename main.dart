@@ -15,7 +15,7 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     'Chrome%2F122.0.0.0%20Safari%2F537.36'
     '&EIO=4&transport=websocket';
 
-const _MT_SCORE = 11;
+const _MT_SCORE = 6;  // Futbol golü (MT=11 basket/tenis)
 
 // nesine_bid → _SbMatch
 final Map<int, _SbMatch> _matches = {};
@@ -84,6 +84,9 @@ Future<void> _loadMatches() async {
       );
     }
     print('📋 ${_matches.length} maç yüklendi (nesine_bid doldu)');
+    for (final e in _matches.entries) {
+      print('   bid=${e.key} → ${e.value.homeTeam} vs ${e.value.awayTeam}');
+    }
   } catch (e) {
     print('⚠️ loadMatches: $e');
   }
