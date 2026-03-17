@@ -71,11 +71,9 @@ Future<void> main() async {
     print('🌐 Health: :$port');
   });
 
-  // İlk eşleştirme
-  await _syncMatches();
-
-  // Her 30sn eşleştirmeyi yenile
-  Timer.periodic(const Duration(seconds: 30), (_) => _syncMatches());
+  // TEST: syncMatches geçici kapalı — WS kararlı mı diye kontrol
+  // await _syncMatches();
+  // Timer.periodic(const Duration(seconds: 30), (_) => _syncMatches());
 
   // Her 5dk istatistik
   Timer.periodic(const Duration(minutes: 5), (_) =>
