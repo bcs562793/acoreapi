@@ -189,12 +189,18 @@ Future<void> _connect() async {
     try { _ws?.sink.add('2'); } catch (_) {}
   });
 
-  await for (final raw in _ws!.stream) {
-    _onRaw(raw.toString());
+  try {
+    await for (final raw in _ws!.stream) {
+      _onRaw(raw.toString());
+    }
+  } catch (e) {
+    print('[ERR] WS stream: $e');
   }
+  final code   = _ws?.closeCode;
+  final reason = _ws?.closeReason;
   _pingTimer?.cancel();
   _ws = null;
-  print('⚠️ WS kapandı');
+  print('[WS] Kapandi closeCode=$code reason=$reason');
 }
 
 void _onRaw(String s) {
