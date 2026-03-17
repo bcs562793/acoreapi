@@ -63,8 +63,8 @@ Future<void> main() async {
     // Socket.IO connected → joinroom gönder
     if (str.startsWith('40')) {
       print('✅ Socket.IO bağlandı!');
-      channel.sink.add('42["joinroom","LiveBets"]');
-      print('📤 joinroom "LiveBets" gönderildi\n');
+      channel.sink.add('42["joinroom","LiveBets_V3"]');
+      print('📤 joinroom "LiveBets_V3" gönderildi\n');
       continue;
     }
 
