@@ -160,29 +160,17 @@ void _onRaw(String s) {
   if (s == '3') return;
 
   if (s.startsWith('0')) {
-    print('📡 Socket.IO open paketi alındı');
-    Future.delayed(const Duration(milliseconds: 100), () {
-      try { _ws?.sink.add('40'); } catch (_) {}
-    });
+    try { _ws?.sink.add('40'); } catch (_) {}
     return;
   }
 
   if (s.startsWith('40')) {
-    print('✅ WS bağlandı, odaya katılınıyor...');
-
-    Future.delayed(const Duration(milliseconds: 200), () {
-      _ws?.sink.add('42["joinroom","LiveBets_V3"]');
-    });
-
+    print('✅ WS bağlandı');
+    _ws?.sink.add('42["joinroom","LiveBets_V3"]');
     _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+    _pingTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       try { _ws?.sink.add('2'); } catch (_) {}
     });
-
-    Timer.periodic(const Duration(seconds: 25), (_) {
-      try { _ws?.sink.add('42["GetVersion","LiveBets_V3",null]'); } catch (_) {}
-    });
-
     return;
   }
 
