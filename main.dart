@@ -1,6 +1,3 @@
-// nesine_ws_test.dart v4
-// GetLiveBetResults → futbol maçlarını göster + alan isimlerini öğren
-
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -23,65 +20,54 @@ Future<void> main() async {
   ).timeout(const Duration(seconds: 10));
 
   print('HTTP ${res.statusCode} | ${res.body.length} bytes\n');
-  if (res.statusCode != 200 || res.body.isEmpty) {
-    print('Hata: ${res.body.substring(0, res.body.length.clamp(0, 300))}');
-    exit(1);
-  }
 
-  final data = jsonDecode(res.body);
-  if (data is! Map) { print('Map değil: ${res.body.substring(0,200)}'); exit(1); }
+  final data = jsonDecode(res.body) as List;
+  print('Toplam: ${data.length} maç\n');
 
-  // Futbol maçlarını filtrele
-  final football = <dynamic>[];
-  data.forEach((key, val) {
-    if (val is Map) {
-      final sport = (val['SportType'] ?? val['BettingType'] ?? '').toString();
-      final btip  = val['BTIP'] ?? val['SportId'] ?? 0;
-      // BTIP=1 genellikle futbol
-      if (sport.toLowerCase().contains('football') || 
-          sport.toLowerCase().contains('futbol') ||
-          btip == 1 || btip == '1') {
-        football.add(val);
-      }
-    }
-  });
-
-  print('Toplam: ${data.length} maç | Futbol: ${football.length}\n');
-
-  // İlk futbol maçının TÜM alanlarını göster
-  if (football.isNotEmpty) {
-    print('=== İlk futbol maçı (tüm alanlar) ===');
-    final first = football.first as Map;
+  // İlk maçın TÜM alanlarını göster
+  if (data.isNotEmpty) {
+    print('=== İlk maç (tüm alanlar) ===');
+    final first = data.first as Map;
     first.forEach((k, v) {
-      print('  $k: $v');
-    });
-  } else {
-    // Futbol bulunamazsa tüm sport type'larını göster
-    print('=== Mevcut sport type\'lar ===');
-    final sports = <String, int>{};
-    data.forEach((key, val) {
-      if (val is Map) {
-        final s = (val['SportType'] ?? val['BTIP'] ?? 'unknown').toString();
-        sports[s] = (sports[s] ?? 0) + 1;
+      // EventScores varsa içini göster
+      if (k == 'EventScores' && v is List && v.isNotEmpty) {
+        print('  $k: ${v.take(3).toList()}');
+      } else if (v.toString().length < 200) {
+        print('  $k: $v');
+      } else {
+        print('  $k: ${v.toString().substring(0, 150)}...');
       }
     });
-    sports.forEach((k, v) => print('  $k: $v maç'));
-
-    print('\n=== İlk maç (tüm alanlar) ===');
-    final first = data.values.first as Map;
-    first.forEach((k, v) => print('  $k: $v'));
   }
 
-  // NID alanı var mı? — fixture eşleştirmesi için
-  print('\n=== NID ve BID kontrolü ===');
-  int withNid = 0, withBid = 0;
-  data.forEach((key, val) {
-    if (val is Map) {
-      if (val.containsKey('NID')) withNid++;
-      if (val.containsKey('BID')) withBid++;
+  // BID / MatchId / NID dağılımı
+  print('\n=== Alan kontrolü ===');
+  final keys = <String>{};
+  for (final item in data.take(5)) {
+    if (item is Map) keys.addAll(item.keys.cast<String>());
+  }
+  print('Mevcut alanlar: $keys');
+
+  // Status=15 dışında aktif maçları bul
+  final active = data.where((m) {
+    if (m is! Map) return false;
+    final st = m['Status'] ?? m['ST'] ?? 0;
+    return st != 15 && st != '15'; // 15=bitmemiş NS olabilir
+  }).toList();
+  print('\nStatus!=15 maç sayısı: ${active.length}');
+  if (active.isNotEmpty) {
+    print('Aktif maç örneği:');
+    final a = active.first as Map;
+    a.forEach((k, v) => print('  $k: $v'));
+  }
+
+  // BID ile eşleşme: MatchId == WS'den gelen BID mi?
+  print('\n=== MatchId örnekleri ===');
+  for (final m in data.take(5)) {
+    if (m is Map) {
+      print('  MatchId=${m['MatchId']} BetradarId=${m['BetradarId']} Status=${m['Status']}');
     }
-  });
-  print('NID olan: $withNid | BID olan: $withBid');
+  }
 
   exit(0);
 }
