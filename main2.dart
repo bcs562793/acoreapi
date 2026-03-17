@@ -169,6 +169,7 @@ void _onScore(int bid, Map m) {
   _goalCount++;
   print('⚽ GOL! bid=$bid ${match.homeTeam} ${match.homeScore}-${match.awayScore} → $newH-$newA'
       '${min != null ? " ($min\')" : ""}');
+  print('📝 Supabase yazılıyor → fixture=${match.fixtureId}');
 
   match.homeScore = newH;
   match.awayScore = newA;
@@ -188,8 +189,10 @@ Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
       headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
       body: jsonEncode(data),
     ).timeout(const Duration(seconds: 8));
-    if (res.statusCode < 300) _writeCount++;
-    else print('❌ SB $fid: ${res.statusCode}');
+    if (res.statusCode < 300) {
+      _writeCount++;
+      print('✅ Supabase yazıldı fixture=$fid status=${res.statusCode}');
+    } else print('❌ SB $fid: ${res.statusCode} ${res.body}');
   } catch (e) { print('❌ SB: $e'); }
 }
 
