@@ -71,28 +71,18 @@ Future<void> main() async {
     print('🌐 Health: :$port');
   });
 
-  // Eşleştirmeyi başlangıçta bir kez yap — WS'den bağımsız
-  // Her 5dk güncelle ama WS kapalıyken de çalışsın
-  Future.delayed(const Duration(seconds: 3), () async {
-    await _syncMatches();
-    Timer.periodic(const Duration(minutes: 5), (_) => _syncMatches());
-  });
+  // Önce maçları eşleştir, SONRA WS'e bağlan
+  await _syncMatches();
 
   // Her 5dk istatistik
   Timer.periodic(const Duration(minutes: 5), (_) =>
     print('📊 Takip:${_tracked.length} Gol:$_goalCount Yaz:$_writeCount'));
 
-  // 28dk sonra temiz çık — cron yeniden başlatır
-  Timer(const Duration(minutes: 28), () {
-    print('⏰ 28dk doldu, temiz çıkış');
-    exit(0);
-  });
-
   // Tek session — kopunca 2dk bekle, Koyeb yeniden başlatır
   try { await _connect(); } catch (e) { print('❌ WS: $e'); }
   print('🔌 Session bitti, 2dk bekleniyor...');
   await Future.delayed(const Duration(minutes: 2));
-  exit(1); // Koyeb restart için non-zero exit
+  exit(1);
 }
 
 // ── ADIM 1: Nesine maç listesi → Supabase eşleştir ────────────
