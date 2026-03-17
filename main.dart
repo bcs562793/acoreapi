@@ -85,12 +85,14 @@ Future<void> main() async {
     exit(0);
   });
 
-  // WS döngüsü
-  while (true) {
-    try { await _connect(); } catch (e) { print('❌ WS: $e'); }
-    print('🔄 10sn sonra yeniden bağlanıyor...');
-    await Future.delayed(const Duration(seconds: 10));
+  // Tek bağlantı — kopunca Actions yeniden başlatır
+  try {
+    await _connect();
+  } catch (e) {
+    print('❌ WS: $e');
   }
+  print('🔌 Bağlantı kapandı, çıkılıyor...');
+  exit(0);
 }
 
 // ── ADIM 1: Nesine maç listesi → Supabase eşleştir ────────────
