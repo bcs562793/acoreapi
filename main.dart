@@ -71,11 +71,11 @@ Future<void> main() async {
     print('🌐 Health: :$port');
   });
 
-  // WS bağlandıktan SONRA eşleştirme yap (5sn bekle)
-  Timer(const Duration(seconds: 5), () async {
+  // Eşleştirmeyi başlangıçta bir kez yap — WS'den bağımsız
+  // Her 5dk güncelle ama WS kapalıyken de çalışsın
+  Future.delayed(const Duration(seconds: 3), () async {
     await _syncMatches();
-    // Her 60sn yenile
-    Timer.periodic(const Duration(seconds: 60), (_) => _syncMatches());
+    Timer.periodic(const Duration(minutes: 5), (_) => _syncMatches());
   });
 
   // Her 5dk istatistik
@@ -221,6 +221,14 @@ void _onRaw(String s) {
   if (s.startsWith('40')) {
     print('✅ WS bağlandı');
     _ws?.sink.add('42["joinroom","LiveBets_V3"]');
+    // Room heartbeat — GetVersion periyodik gönder
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      try {
+        _ws?.sink.add('2'); // Engine.IO ping
+        _ws?.sink.add('42["GetVersion","LiveBets_V3",null]'); // Room heartbeat
+      } catch (_) {}
+    });
     return;
   }
   if (s.startsWith('42')) _onEvent(s.substring(2));
