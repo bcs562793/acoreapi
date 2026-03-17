@@ -220,8 +220,10 @@ void _onRaw(String s) {
   }
   if (s.startsWith('40')) {
     print('✅ WS bağlandı → joinroom LiveBets_V3');
-    await Future.delayed(const Duration(milliseconds: 1500));
-    _ws?.sink.add('42["joinroom","LiveBets_V3"]');
+    Timer(const Duration(milliseconds: 1500), () {
+      _ws?.sink.add('42["joinroom","LiveBets_V3"]');
+      print('📤 joinroom LiveBets_V3 gönderildi');
+    });
     return;
   }
   if (s.startsWith('42')) _onEvent(s.substring(2));
