@@ -3,7 +3,6 @@ name: Nesine Score Listener
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'  # Her 30dk yeniden başlat
 
 jobs:
   listen:
