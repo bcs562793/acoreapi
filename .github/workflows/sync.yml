@@ -3,7 +3,6 @@ name: Nesine Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'
 
 jobs:
   sync:
