@@ -15,17 +15,14 @@ const _wsUrl = 'wss://rt.nesine.com/socket.io/'
     'Chrome%2F122.0.0.0%20Safari%2F537.36'
     '&EIO=4&transport=websocket';
 
-
 // nesine_bid → _SbMatch
 final Map<int, _SbMatch> _matches = {};
 
-WebSocketChannel? _ws;
-Timer? _pingTimer;
 int _goalCount = 0, _writeCount = 0;
 
 Future<void> main() async {
   print('╔══════════════════════════════════════╗');
-  print('║  ⚡ Nesine Score Listener            ║');
+  print('║  ⚡ Nesine Score Listener v2         ║');
   print('╚══════════════════════════════════════╝');
 
   if (_sbUrl.isEmpty || _sbKey.isEmpty) {
@@ -43,20 +40,172 @@ Future<void> main() async {
     print('🌐 Health: :$port');
   });
 
-  // Supabase'den nesine_bid'li maçları yükle
   await _loadMatches();
   Timer.periodic(const Duration(minutes: 5), (_) => _loadMatches());
   Timer.periodic(const Duration(minutes: 5), (_) =>
     print('📊 Maç:${_matches.length} Gol:$_goalCount Yaz:$_writeCount'));
 
-  // WS döngüsü
+
+  // A hemen, B 10 saniye sonra başlar
+  // 10s offset: sunucu aynı anda kesse bile reconnect'ler çakışmaz
+  unawaited(_wsLoop('A'));
+  await Future.delayed(const Duration(seconds: 10));
+  unawaited(_wsLoop('B'));
+
+  await Completer<void>().future;
+}
+
+// ─── WS döngüsü ────────────────────────────────────────────────────────────
+Future<void> _wsLoop(String name) async {
   while (true) {
-    try { await _connect(); } catch (e) { print('❌ WS: $e'); }
-    await Future.delayed(const Duration(seconds: 3));
+    try {
+      await _connect(name);
+    } catch (e) {
+      print('[$name] ❌ WS: $e');
+    }
+    // Kopunca hemen HTTP poll yap — WS'de kaçırılan golü yakala
+    print('[$name] 🔄 Koptu, HTTP poll başlıyor...');
+    await _pollScores(name);
+    // Hiç bekleme yok — hemen yeniden bağlan
   }
 }
 
-// Supabase'den nesine_bid dolu maçları çek
+// ─── WS bağlantısı ─────────────────────────────────────────────────────────
+Future<void> _connect(String name) async {
+  print('[$name] 🔌 Bağlanıyor...');
+  WebSocketChannel? ws;
+  Timer? ping;
+
+  ws = IOWebSocketChannel.connect(Uri.parse(_wsUrl), headers: {
+    'Origin':        'https://www.nesine.com',
+    'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
+    'Cache-Control': 'no-cache',
+  });
+
+  void send(String s) { try { ws?.sink.add(s); } catch (_) {} }
+
+  try {
+    await for (final raw in ws.stream) {
+      final s = raw.toString();
+      if (s == '2')           { send('3'); continue; }
+      if (s == '3')           { continue; }
+      if (s.startsWith('0'))  { send('40'); continue; }
+      if (s.startsWith('40')) {
+        print('[$name] ✅ Bağlandı');
+        send('42["joinroom","LiveBets_V3"]');
+        ping?.cancel();
+        ping = Timer.periodic(const Duration(seconds: 20), (_) => send('2'));
+        continue;
+      }
+      if (s.startsWith('42')) _onEvent(name, s.substring(2));
+    }
+  } catch (e) {
+    print('[$name] [ERR] $e');
+  }
+
+  ping?.cancel();
+  print('[$name] [WS] Kapandı code=${ws.closeCode}');
+}
+
+// ─── Event işle ────────────────────────────────────────────────────────────
+void _onEvent(String name, String payload) {
+  try {
+    final list = jsonDecode(payload) as List;
+    if (list[0] != 'LiveBets' || list[1] is! List) return;
+    for (final item in list[1] as List) {
+      if (item is! Map) continue;
+      if ((item['sportype'] ?? '').toString().toLowerCase() != 'football') continue;
+      final m = item['M'] as Map?;
+      if (m == null) continue;
+      final bid = _int(m['BID'] ?? item['bid']);
+      if (bid == null) continue;
+
+      final h = _int(m['H']);
+      final a = _int(m['A']);
+      if (h == null || a == null) continue;
+      if (h > 30 || a > 30) continue;
+      if (m.containsKey('EN')) continue;
+      if (!m.containsKey('TS')) continue;
+      if (m['ST'] != 1) continue;
+
+      _onScore(name, bid, m);
+    }
+  } catch (_) {}
+}
+
+// ─── Skor değişimi ─────────────────────────────────────────────────────────
+void _onScore(String name, int bid, Map m) {
+  final match = _matches[bid];
+  if (match == null) return;
+
+  final newH = _int(m['H'])!;
+  final newA = _int(m['A'])!;
+  final min  = _int(m['T']);
+
+  if (newH == match.homeScore && newA == match.awayScore) return;
+
+  _goalCount++;
+  print('[$name] ⚽ GOL! bid=$bid ${match.homeTeam} '
+      '${match.homeScore}-${match.awayScore} → $newH-$newA'
+      '${min != null ? " ($min\')" : ""}');
+
+  match.homeScore = newH;
+  match.awayScore = newA;
+
+  _sbPatch(match.fixtureId, {
+    'home_score':   newH,
+    'away_score':   newA,
+    'score_source': 'nesine',
+    if (min != null) 'elapsed_time': min,
+    'updated_at':   DateTime.now().toIso8601String(),
+  });
+}
+
+// ─── HTTP Poll: kopunca skoru doğrudan Nesine'den çek ──────────────────────
+// Nesine'nin REST endpoint'i varsa buraya ekle.
+// Yoksa Supabase'deki mevcut skorla karşılaştır — en azından tutarsızlık tespit edilir.
+Future<void> _pollScores(String name) async {
+  if (_matches.isEmpty) return;
+  try {
+    // Supabase'den güncel skoru çek ve local state ile karşılaştır
+    final ids = _matches.values.map((m) => m.fixtureId).join(',');
+    final res = await http.get(
+      Uri.parse('$_sbUrl/rest/v1/live_matches'
+          '?select=fixture_id,home_score,away_score'
+          '&fixture_id=in.($ids)'),
+      headers: _sbHeaders(),
+    ).timeout(const Duration(seconds: 8));
+
+    if (res.statusCode != 200) return;
+    final rows = (jsonDecode(res.body) as List).cast<Map>();
+
+    for (final r in rows) {
+      final fid  = _int(r['fixture_id']);
+      final dbH  = _int(r['home_score']) ?? 0;
+      final dbA  = _int(r['away_score']) ?? 0;
+      if (fid == null) continue;
+
+      // Local map'te bul
+      final entry = _matches.entries
+          .where((e) => e.value.fixtureId == fid)
+          .firstOrNull;
+      if (entry == null) continue;
+
+      final match = entry.value;
+      if (dbH != match.homeScore || dbA != match.awayScore) {
+        print('[$name] ⚠️ Poll tutarsızlık! fid=$fid '
+            'local=${match.homeScore}-${match.awayScore} '
+            'db=$dbH-$dbA → local güncellendi');
+        match.homeScore = dbH;
+        match.awayScore = dbA;
+      }
+    }
+  } catch (e) {
+    print('[$name] ⚠️ poll: $e');
+  }
+}
+
+// ─── Supabase ──────────────────────────────────────────────────────────────
 Future<void> _loadMatches() async {
   try {
     final res = await http.get(
@@ -82,101 +231,13 @@ Future<void> _loadMatches() async {
         awayScore: _int(r['away_score']) ?? 0,
       );
     }
-    print('📋 ${_matches.length} maç yüklendi (nesine_bid doldu)');
+    print('📋 ${_matches.length} maç yüklendi');
     for (final e in _matches.entries) {
       print('   bid=${e.key} → ${e.value.homeTeam} vs ${e.value.awayTeam}');
     }
   } catch (e) {
     print('⚠️ loadMatches: $e');
   }
-}
-
-Future<void> _connect() async {
-  print('🔌 Bağlanıyor...');
-  _ws = IOWebSocketChannel.connect(Uri.parse(_wsUrl), headers: {
-    'Origin':        'https://www.nesine.com',
-    'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0',
-    'Cache-Control': 'no-cache',
-  });
-  _pingTimer?.cancel();
-  try {
-    await for (final raw in _ws!.stream) { _onRaw(raw.toString()); }
-  } catch (e) { print('[ERR] $e'); }
-  final code = _ws?.closeCode;
-  _pingTimer?.cancel();
-  _ws = null;
-  print('[WS] Kapandı code=$code');
-}
-
-void _onRaw(String s) {
-  if (s == '2') { _ws?.sink.add('3'); return; }
-  if (s == '3') return;
-  if (s.startsWith('0')) {
-    try { _ws?.sink.add('40'); } catch (_) {}
-    return;
-  }
-  if (s.startsWith('40')) {
-    print('✅ WS bağlandı');
-    _ws?.sink.add('42["joinroom","LiveBets_V3"]');
-    _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: 20), (_) {
-      try { _ws?.sink.add('2'); } catch (_) {}
-    });
-    return;
-  }
-  if (s.startsWith('42')) _onEvent(s.substring(2));
-}
-
-void _onEvent(String payload) {
-  try {
-    final list = jsonDecode(payload) as List;
-    if (list[0] != 'LiveBets' || list[1] is! List) return;
-    for (final item in list[1] as List) {
-      if (item is! Map) continue;
-      // Sadece Football
-      if ((item['sportype'] ?? '').toString().toLowerCase() != 'football') continue;
-      final m = item['M'] as Map?;
-      if (m == null) continue;
-      final bid = _int(m['BID'] ?? item['bid']);
-      if (bid == null) continue;
-
-      // H ve A sayısal ve makul bir futbol skoru ise işle
-      final h = _int(m['H']);
-      final a = _int(m['A']);
-      if (h == null || a == null) continue;   // sayı değilse atla
-      if (h > 30 || a > 30) continue;         // 30+ istatistik
-      if (m.containsKey('EN')) continue;      // EN=istatistik adı varsa atla
-      if (!m.containsKey('TS')) continue;     // TS yoksa skor event'i değil
-      if (m['ST'] != 1) continue;             // ST=1 aktif skor
-
-      _onScore(bid, m);
-    }
-  } catch (_) {}
-}
-
-void _onScore(int bid, Map m) {
-  final match = _matches[bid];
-  if (match == null) return;
-
-  final newH = _int(m['H']);
-  final newA = _int(m['A']);
-  final min  = _int(m['T']);
-  if (newH == null || newA == null) return;
-  if (newH == match.homeScore && newA == match.awayScore) return;
-
-  _goalCount++;
-  print('⚽ GOL! bid=$bid ${match.homeTeam} ${match.homeScore}-${match.awayScore} → $newH-$newA'
-      '${min != null ? " ($min\')" : ""}');
-
-  match.homeScore = newH;
-  match.awayScore = newA;
-
-  _sbPatch(match.fixtureId, {
-    'home_score': newH, 'away_score': newA,
-    'score_source': 'nesine',
-    if (min != null) 'elapsed_time': min,
-    'updated_at': DateTime.now().toIso8601String(),
-  });
 }
 
 Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
