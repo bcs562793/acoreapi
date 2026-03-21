@@ -39,11 +39,13 @@ Future<void> main() async {
   print('   ${nList.length} futbol maçı bulundu');
 
   // 2. Supabase'den canlı maçlar
+  // FIX: NS kaldırıldı — GetLiveBetResults zaten sadece aktif maçları döndürür,
+  // NS maçlara nesine_bid yazılırsa listener henüz başlamamış maçlara skor yazar.
   print('📡 Supabase live_matches...');
   final sRes = await http.get(
     Uri.parse('$_sbUrl/rest/v1/live_matches'
         '?select=fixture_id,home_team,away_team'
-        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
+        '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'),
     headers: _sbHeaders(),
   ).timeout(const Duration(seconds: 15));
 
