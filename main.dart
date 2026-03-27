@@ -285,8 +285,12 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final ts       = v['ts'] as Map<String, dynamic>?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
-  final elapsed   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
   final status    = _bilyonerPeriodMap[periodType] ?? '1H';
+
+  // ts.ts = bu period içindeki dakika (toplam değil)
+  // SECOND_HALF ts=5 → toplam 50', ET ts=3 → toplam 93'
+  final rawTs = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
+  final elapsed = rawTs != null ? _totalElapsed(status, rawTs) : null;
 
   _bilyonerUpdates++;
   fixture.statusShort = status;
@@ -523,6 +527,19 @@ Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
     if (res.statusCode < 300) _writeCount++;
     else print('❌ SB $fid: ${res.statusCode}');
   } catch (e) { print('❌ SB: $e'); }
+}
+
+// Period içi dakikayı toplam maç dakikasına çevir
+int _totalElapsed(String status, int periodElapsed) {
+  return switch (status) {
+    '1H'   => periodElapsed,           // 1. yarı: direkt
+    'HT'   => 45,                      // Devre arası: 45
+    '2H'   => 45 + periodElapsed,      // 2. yarı: 45 + period
+    'ET'   => 90 + periodElapsed,      // Uzatma: 90 + period
+    'BT'   => 105,                     // Uzatma D.A.: 105
+    'P'    => 120,                     // Penaltılar: 120
+    _      => periodElapsed,
+  };
 }
 
 bool _isFinished(String s) =>
