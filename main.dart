@@ -67,6 +67,7 @@ class _LiveMatch {
 }
 
 final Map<int, _LiveMatch> _fixtures      = {};
+final Set<int>             _addingFids    = {}; // çift ekleme önleme
 final Map<int, int>        _bidToFid      = {};
 final Set<int>             _nesineGuarded = {}; // nesine_bid olan fixture_id'ler
 
@@ -176,6 +177,8 @@ Future<void> _bilyonerConnect(String name) async {
 Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   // Aynı maç için çift eklemeyi önle
   if (_fixtures.containsKey(fid)) return;
+  if (_addingFids.contains(fid)) return; // zaten ekleniyor
+  _addingFids.add(fid);
 
   final htn    = v['htn'] as String? ?? '';
   final atn    = v['atn'] as String? ?? '';
@@ -266,6 +269,8 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
     }
   } catch (e) {
     print('[BLY] ❌ fid=$fid: $e');
+  } finally {
+    _addingFids.remove(fid);
   }
 }
 
@@ -303,7 +308,7 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
     'ts': {'hs': '0', 'as': '0', 'ts': '0'},
   };
 
-  print('[$name] 📥 Yeni maç tespit edildi: fid=$fid $htn vs $atn');
+  print('[$name] 📥 Yeni maç tespit edildi: fid=$fid $htn vs $atn esdl=${event['esdl']} lgn=${event['lgn']}');
   _addMissingFixture(fid, syntheticV);
 }
 
