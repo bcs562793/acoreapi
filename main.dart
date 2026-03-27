@@ -32,7 +32,9 @@ const Map<String, String> _bilyonerPeriodMap = {
   'EXTRA_TIME': 'ET', 'EXTRA_TIME_FIRST_HALF': 'ET',
   'EXTRA_TIME_HALF_TIME': 'BT', 'EXTRA_TIME_SECOND_HALF': 'ET',
   'PENALTY': 'P', 'PENALTIES': 'P',
+  'FULL_TIME': 'FT',                // ← eksikti
   'FINISHED': 'FT', 'ENDED': 'FT',
+  'POST_GAME': 'FT',               // basketbol bitti
   'AFTER_EXTRA_TIME': 'AET', 'AFTER_PENALTIES': 'PEN',
   'POSTPONED': 'PST', 'CANCELLED': 'CANC', 'NOT_STARTED': 'NS',
 };
@@ -268,7 +270,7 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   if (_basketballPeriods.contains(periodType)) return;
 
   final fid = _int(v['sbsEventId']);
-  if (fid == null) return;
+  if (fid == null || fid == 0) return;
 
   // DEBUG: tüm Bilyoner maçlarını logla
   final ts0 = v['ts'] as Map?;
