@@ -154,12 +154,17 @@ Future<void> _bilyonerConnect(String name) async {
       if (kind == 'ConnectionBegin') {
         print('[$name] ✅ Bilyoner bağlandı');
         send({'kind': 'SubscribeStreamTopic', 'topic': 'perform-match-details-socket'});
+        send({'kind': 'SubscribeStreamTopic', 'topic': 'updatedMobileEventsV3'});
         ping?.cancel();
         ping = Timer.periodic(const Duration(seconds: 30), (_) =>
             send({'kind': 'Ping', 'timestamp': DateTime.now().millisecondsSinceEpoch}));
-      } else if (kind == 'StreamMessage' &&
-                 msg['topic'] == 'perform-match-details-socket') {
-        _onBilyonerData(name, msg['value'] as Map<String, dynamic>?);
+      } else if (kind == 'StreamMessage') {
+        final topic = msg['topic'] as String? ?? '';
+        if (topic == 'perform-match-details-socket') {
+          _onBilyonerData(name, msg['value'] as Map<String, dynamic>?);
+        } else if (topic == 'updatedMobileEventsV3') {
+          _onBilyonerEventUpdate(name, msg['value'] as Map<String, dynamic>?);
+        }
       }
     }
   } catch (e) { print('[$name] [ERR] Bly $e'); }
@@ -262,6 +267,44 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   } catch (e) {
     print('[BLY] ❌ fid=$fid: $e');
   }
+}
+
+// updatedMobileEventsV3: tam event bilgisi (takım adı, lig, vs.)
+// Yeni maçları DB'ye eklemek için kullan
+void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
+  if (v == null) return;
+  final event = v['event'] as Map<String, dynamic>?;
+  if (event == null) return;
+
+  final fid = _int(event['id'] ?? event['sbsEventId']);
+  if (fid == null || fid == 0) return;
+
+  // st=1 → futbol kontrolü
+  final st = _int(event['st']);
+  if (st != null && st != 1) return;
+
+  // Zaten biliyorsak atla
+  if (_fixtures.containsKey(fid)) return;
+
+  // Takım adları varsa DB'ye ekle
+  final htn = event['htn'] as String? ?? '';
+  final atn = event['atn'] as String? ?? '';
+  if (htn.isEmpty || atn.isEmpty) return;
+
+  // Bilyoner event formatından fixture oluştur
+  final syntheticV = {
+    'sbsEventId': fid,
+    'htn': htn, 'atn': atn,
+    'htpi': event['htpi'], 'atpi': event['atpi'],
+    'lgn': event['lgn'] ?? '',
+    'competitionId': event['competitionId'] ?? event['cid'],
+    'esdl': event['esdl'],
+    'periodType': 'FIRST_HALF',
+    'ts': {'hs': '0', 'as': '0', 'ts': '0'},
+  };
+
+  print('[$name] 📥 Yeni maç tespit edildi: fid=$fid $htn vs $atn');
+  _addMissingFixture(fid, syntheticV);
 }
 
 void _onBilyonerData(String name, Map<String, dynamic>? v) {
