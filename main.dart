@@ -165,6 +165,103 @@ Future<void> _bilyonerConnect(String name) async {
   print('[$name] Bilyoner kapandı code=${ws.closeCode}');
 }
 
+// Bilyoner'dan gelen ama DB'de olmayan maçı ekle
+Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
+  // Aynı maç için çift eklemeyi önle
+  if (_fixtures.containsKey(fid)) return;
+
+  final htn    = v['htn'] as String? ?? '';
+  final atn    = v['atn'] as String? ?? '';
+  final htpi   = _int(v['htpi']);
+  final atpi   = _int(v['atpi']);
+  final lgn    = v['lgn'] as String? ?? '';
+  final compId = _int(v['competitionId'] ?? v['cid']) ?? 0;
+  final esdl   = _int(v['esdl']) ?? 0;
+  final periodType = v['periodType'] as String? ?? '';
+  final status = _bilyonerPeriodMap[periodType] ?? '1H';
+  final ts     = v['ts'] as Map?;
+  final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
+  final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
+  final elapsed   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
+
+  if (htn.isEmpty) return; // takım ismi yoksa ekleme
+
+  final homeLogo = htpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$htpi.gif' : '';
+  final awayLogo = atpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$atpi.gif' : '';
+
+  // Timestamp
+  final tsVal = esdl > 0 ? esdl ~/ 1000 : 0;
+  String dateStr = '';
+  if (esdl > 0) {
+    final utc = DateTime.fromMillisecondsSinceEpoch(esdl, isUtc: true);
+    final tr  = utc.add(const Duration(hours: 3));
+    final p   = (int n) => n.toString().padLeft(2, '0');
+    dateStr   = '${tr.year}-${p(tr.month)}-${p(tr.day)}T${p(tr.hour)}:${p(tr.minute)}:00+03:00';
+  }
+
+  final rawData = jsonEncode({
+    'fixture': {
+      'id': fid, 'timestamp': tsVal, 'date': dateStr,
+      'timezone': 'Europe/Istanbul', 'referee': null,
+      'periods': {'first': null, 'second': null},
+      'venue': {'id': null, 'name': null, 'city': null},
+      'status': {
+        'long': _statusLong[status] ?? status,
+        'short': status, 'elapsed': elapsed, 'extra': null,
+      },
+    },
+    'teams': {
+      'home': {'id': htpi, 'name': htn, 'logo': homeLogo, 'winner': null},
+      'away': {'id': atpi, 'name': atn, 'logo': awayLogo, 'winner': null},
+    },
+    'league': {'id': compId, 'name': lgn, 'logo': '', 'country': '', 'flag': null},
+    'goals': {'home': homeScore, 'away': awayScore},
+  });
+
+  final data = {
+    'fixture_id':   fid,
+    'home_team':    htn,
+    'away_team':    atn,
+    'home_team_id': htpi,
+    'away_team_id': atpi,
+    'home_logo':    homeLogo,
+    'away_logo':    awayLogo,
+    'home_score':   homeScore,
+    'away_score':   awayScore,
+    'status_short': status,
+    'elapsed_time': elapsed,
+    'league_id':    compId,
+    'league_name':  lgn,
+    'league_logo':  '',
+    'score_source': 'bilyoner',
+    'raw_data':     rawData,
+    'updated_at':   DateTime.now().toIso8601String(),
+  };
+
+  try {
+    final res = await http.post(
+      Uri.parse('$_sbUrl/rest/v1/live_matches'),
+      headers: {..._sbHeaders(), 'Content-Type': 'application/json',
+                 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+      body: jsonEncode(data),
+    ).timeout(const Duration(seconds: 8));
+
+    if (res.statusCode < 300) {
+      print('[BLY] ➕ fid=$fid eklendi: $htn vs $atn [$status $elapsed\']');
+      _fixtures[fid] = _LiveMatch(
+        fixtureId: fid, homeTeam: htn, awayTeam: atn,
+        homeScore: homeScore, awayScore: awayScore,
+        statusShort: status, rawData: rawData,
+      );
+      _writeCount++;
+    } else {
+      print('[BLY] ⚠️ fid=$fid eklenemedi: ${res.statusCode}');
+    }
+  } catch (e) {
+    print('[BLY] ❌ fid=$fid: $e');
+  }
+}
+
 void _onBilyonerData(String name, Map<String, dynamic>? v) {
   if (v == null) return;
   final periodType = v['periodType'] as String? ?? '';
@@ -178,7 +275,12 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   print('[BLY] fid=$fid period=$periodType ts=${ts0?['ts']} hs=${ts0?['hs']} as=${ts0?['as']}');
 
   final fixture = _fixtures[fid];
-  if (fixture == null) return; // DB'de yok, atla
+  if (fixture == null) {
+    // DB'de yok — bu maç fixture_sync tarafından yazılmamış
+    // Bilyoner verisinden DB'ye ekle
+    _addMissingFixture(fid, v);
+    return;
+  }
 
   final ts       = v['ts'] as Map<String, dynamic>?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
