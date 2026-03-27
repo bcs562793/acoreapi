@@ -173,6 +173,10 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final fid = _int(v['sbsEventId']);
   if (fid == null) return;
 
+  // DEBUG: tüm Bilyoner maçlarını logla
+  final ts0 = v['ts'] as Map?;
+  print('[BLY] fid=$fid period=$periodType ts=${ts0?['ts']} hs=${ts0?['hs']} as=${ts0?['as']}');
+
   final fixture = _fixtures[fid];
   if (fixture == null) return; // DB'de yok, atla
 
@@ -262,7 +266,12 @@ Future<void> _nesineConnect(String name) async {
         print('[$name] ✅ Nesine bağlandı');
         send('42["joinroom","LiveBets_V3"]');
         ping?.cancel();
-        ping = Timer.periodic(const Duration(seconds: 20), (_) => send('2'));
+        // Nesine socket.io: sunucu "2" gönderir, biz "3" ile cevap veririz
+        // Biz "2" göndermiyoruz — sunucu kendi ping'ini yönetiyor
+        // Ekstra keepalive: 25s'de bir "42["heartbeat"]" gönder
+        ping = Timer.periodic(const Duration(seconds: 25), (_) {
+          send('42["heartbeat"]');
+        });
         continue;
       }
       if (s.startsWith('42')) _onNesineEvent(name, s.substring(2));
