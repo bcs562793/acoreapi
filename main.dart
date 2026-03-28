@@ -32,9 +32,9 @@ const Map<String, String> _bilyonerPeriodMap = {
   'EXTRA_TIME': 'ET', 'EXTRA_TIME_FIRST_HALF': 'ET',
   'EXTRA_TIME_HALF_TIME': 'BT', 'EXTRA_TIME_SECOND_HALF': 'ET',
   'PENALTY': 'P', 'PENALTIES': 'P',
-  'FULL_TIME': 'FT',                // ← eksikti
+  'FULL_TIME': 'FT',
   'FINISHED': 'FT', 'ENDED': 'FT',
-  'POST_GAME': 'FT',               // basketbol bitti
+  'POST_GAME': 'FT',
   'AFTER_EXTRA_TIME': 'AET', 'AFTER_PENALTIES': 'PEN',
   'POSTPONED': 'PST', 'CANCELLED': 'CANC', 'NOT_STARTED': 'NS',
 };
@@ -58,24 +58,26 @@ class _LiveMatch {
   String       statusShort;
   String       rawData;
   int?         nesineBid;
-  int?         kickoffTs; // Unix timestamp (saniye)
+  int?         kickoffTs;
+  int?         secondHalfStartTs;
+  int?         extraTimeStartTs;
 
   _LiveMatch({
     required this.fixtureId, required this.homeTeam, required this.awayTeam,
     required this.homeScore, required this.awayScore,
     required this.statusShort, required this.rawData,
     this.nesineBid, this.kickoffTs,
+    this.secondHalfStartTs, this.extraTimeStartTs,
   });
 }
 
 final Map<int, _LiveMatch> _fixtures      = {};
-final Set<int>             _addingFids    = {}; // çift ekleme önleme
+final Set<int>             _addingFids    = {};
 final Map<int, int>        _bidToFid      = {};
-final Set<int>             _nesineGuarded = {}; // nesine_bid olan fixture_id'ler
+final Set<int>             _nesineGuarded = {};
 
 int _nesineGoals = 0, _bilyonerUpdates = 0, _writeCount = 0;
 final Map<int, DateTime> _lastWrite        = {};
-
 final Map<int, int>      _lastElapsedWritten = {};
 
 Future<void> main() async {
@@ -107,18 +109,15 @@ Future<void> main() async {
 
   await _loadFixtures();
   Timer.periodic(const Duration(minutes: 3), (_) => _loadFixtures());
-  // Her 3 dakikada stale maçları temizle (FT eventi kaçırılmış olabilir)
   Timer.periodic(const Duration(minutes: 3), (_) => _cleanStaleMatches());
   Timer.periodic(const Duration(minutes: 5), (_) =>
       print('📊 Maç:${_fixtures.length} NesEşl:${_bidToFid.length}'
             ' Gol:$_nesineGoals Bly:$_bilyonerUpdates Yaz:$_writeCount'));
 
-  // Nesine A+B
   unawaited(_nesineLoop('A'));
   await Future.delayed(const Duration(seconds: 10));
   unawaited(_nesineLoop('B'));
 
-  // Bilyoner C+D
   unawaited(_bilyonerLoop('C'));
   await Future.delayed(const Duration(seconds: 10));
   unawaited(_bilyonerLoop('D'));
@@ -127,8 +126,7 @@ Future<void> main() async {
 }
 
 // ══════════════════════════════════════════════════════════════
-// BİLYONER — elapsed + status + skor (nesine_bid olmayanlarda)
-// sbsEventId = fixture_id → eşleştirme yok!
+// BİLYONER
 // ══════════════════════════════════════════════════════════════
 Future<void> _bilyonerLoop(String name) async {
   while (true) {
@@ -140,22 +138,39 @@ Future<void> _bilyonerLoop(String name) async {
 
 Future<void> _bilyonerConnect(String name) async {
   print('[$name] 🔌 Bilyoner: $_bilyonerWsUrl');
-  final ws = IOWebSocketChannel.connect(Uri.parse(_bilyonerWsUrl), headers: {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-    'Origin':                   'https://www.bilyoner.com',
-    'Referer':                  'https://www.bilyoner.com/canli-iddaa',
-    'platform-token':           '40CAB7292CD83F7EE0631FC35A0AFC75',
-    'x-device-id':              'C1A34687-8F75-47E8-9FF9-1D231F05782E',
-    'x-client-app-version':     '3.95.2',
-    'x-client-browser-version': 'Chrome / v146.0.0.0',
-    'x-client-channel':         'WEB',
-  });
+  final ws = IOWebSocketChannel.connect(
+    Uri.parse(_bilyonerWsUrl),
+    pingInterval: const Duration(seconds: 20),
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+      'Origin':                   'https://www.bilyoner.com',
+      'Referer':                  'https://www.bilyoner.com/canli-iddaa',
+      'platform-token':           '40CAB7292CD83F7EE0631FC35A0AFC75',
+      'x-device-id':              'C1A34687-8F75-47E8-9FF9-1D231F05782E',
+      'x-client-app-version':     '3.95.2',
+      'x-client-browser-version': 'Chrome / v146.0.0.0',
+      'x-client-channel':         'WEB',
+    },
+  );
 
   Timer? ping;
+  Timer? watchdog;
+  DateTime lastMessage = DateTime.now();
+
   void send(Map<String, dynamic> m) { try { ws.sink.add(jsonEncode(m)); } catch (_) {} }
+
+  void resetWatchdog() {
+    lastMessage = DateTime.now();
+    watchdog?.cancel();
+    watchdog = Timer(const Duration(seconds: 90), () {
+      print('[$name] ⚠️ Bilyoner 90s mesaj yok, bağlantı kesiliyor...');
+      ws.sink.close();
+    });
+  }
 
   try {
     await for (final raw in ws.stream) {
+      resetWatchdog();
       final msg  = jsonDecode(raw.toString()) as Map<String, dynamic>;
       final kind = msg['kind'] as String? ?? '';
       if (kind == 'ConnectionBegin') {
@@ -163,8 +178,11 @@ Future<void> _bilyonerConnect(String name) async {
         send({'kind': 'SubscribeStreamTopic', 'topic': 'perform-match-details-socket'});
         send({'kind': 'SubscribeStreamTopic', 'topic': 'updatedMobileEventsV3'});
         ping?.cancel();
-        ping = Timer.periodic(const Duration(seconds: 30), (_) =>
+        ping = Timer.periodic(const Duration(seconds: 20), (_) =>
             send({'kind': 'Ping', 'timestamp': DateTime.now().millisecondsSinceEpoch}));
+        resetWatchdog();
+      } else if (kind == 'Pong') {
+        // bağlantı sağlıklı
       } else if (kind == 'StreamMessage') {
         final topic = msg['topic'] as String? ?? '';
         if (topic == 'perform-match-details-socket') {
@@ -176,14 +194,14 @@ Future<void> _bilyonerConnect(String name) async {
     }
   } catch (e) { print('[$name] [ERR] Bly $e'); }
   ping?.cancel();
+  watchdog?.cancel();
   print('[$name] Bilyoner kapandı code=${ws.closeCode}');
 }
 
-// Bilyoner'dan gelen ama DB'de olmayan maçı ekle
+// ── Bilyoner'dan gelen yeni maçı DB'ye ekle ─────────────────────
 Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
-  // Aynı maç için çift eklemeyi önle
   if (_fixtures.containsKey(fid)) return;
-  if (_addingFids.contains(fid)) return; // zaten ekleniyor
+  if (_addingFids.contains(fid)) return;
   _addingFids.add(fid);
 
   final htn    = v['htn'] as String? ?? '';
@@ -195,18 +213,21 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final esdl   = _int(v['esdl']) ?? 0;
   final periodType = v['periodType'] as String? ?? '';
   final status = _bilyonerPeriodMap[periodType] ?? '1H';
+
+  // FIX: Biten maçları tekrar ekleme
+  if (_isFinished(status)) { _addingFids.remove(fid); return; }
+
   final ts     = v['ts'] as Map?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
   final rawTs0   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
   final elapsed  = rawTs0 != null ? _totalElapsed(status, rawTs0) : null;
 
-  if (htn.isEmpty) return; // takım ismi yoksa ekleme
+  if (htn.isEmpty) { _addingFids.remove(fid); return; }
 
   final homeLogo = htpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$htpi.gif' : '';
   final awayLogo = atpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$atpi.gif' : '';
 
-  // Timestamp
   final tsVal = esdl > 0 ? esdl ~/ 1000 : 0;
   String dateStr = '';
   if (esdl > 0) {
@@ -266,11 +287,12 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
     if (res.statusCode < 300) {
       print('[BLY] ➕ fid=$fid eklendi: $htn vs $atn [$status $elapsed\']');
       _fixtures[fid] = _LiveMatch(
-  fixtureId: fid, homeTeam: htn, awayTeam: atn,
-  homeScore: homeScore, awayScore: awayScore,
-  statusShort: status, rawData: rawData,
-  kickoffTs: tsVal > 0 ? tsVal : null,  // ✅ eklendi
-);
+        fixtureId: fid, homeTeam: htn, awayTeam: atn,
+        homeScore: homeScore, awayScore: awayScore,
+        statusShort: status, rawData: rawData,
+        // FIX: kickoffTs artık geçiriliyor
+        kickoffTs: tsVal > 0 ? tsVal : null,
+      );
       _writeCount++;
     } else {
       print('[BLY] ⚠️ fid=$fid eklenemedi: ${res.statusCode}');
@@ -282,8 +304,7 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   }
 }
 
-// updatedMobileEventsV3: tam event bilgisi (takım adı, lig, vs.)
-// Yeni maçları DB'ye eklemek için kullan
+// ── updatedMobileEventsV3: yeni maç tespiti ──────────────────────
 void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
   if (v == null) return;
   final event = v['event'] as Map<String, dynamic>?;
@@ -292,19 +313,15 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
   final fid = _int(event['id'] ?? event['sbsEventId']);
   if (fid == null || fid == 0) return;
 
-  // st=1 → futbol kontrolü
   final st = _int(event['st']);
   if (st != null && st != 1) return;
 
-  // Zaten biliyorsak atla
   if (_fixtures.containsKey(fid)) return;
 
-  // Takım adları varsa DB'ye ekle
   final htn = event['htn'] as String? ?? '';
   final atn = event['atn'] as String? ?? '';
   if (htn.isEmpty || atn.isEmpty) return;
 
-  // Bilyoner event formatından fixture oluştur
   final syntheticV = {
     'sbsEventId': fid,
     'htn': htn, 'atn': atn,
@@ -320,6 +337,7 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
   _addMissingFixture(fid, syntheticV);
 }
 
+// ── perform-match-details-socket: skor/dakika/durum ─────────────
 void _onBilyonerData(String name, Map<String, dynamic>? v) {
   if (v == null) return;
   final periodType = v['periodType'] as String? ?? '';
@@ -328,48 +346,62 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final fid = _int(v['sbsEventId']);
   if (fid == null || fid == 0) return;
 
-  // DEBUG: tüm Bilyoner maçlarını logla
-  final ts0 = v['ts'] as Map?;
-  print('[BLY] fid=$fid period=$periodType ts=${ts0?['ts']} hs=${ts0?['hs']} as=${ts0?['as']}');
-
   final fixture = _fixtures[fid];
   if (fixture == null) {
-  // ✅ Biten maçları tekrar ekleme (C zaten sildiyse D re-insert etmesin)
-  final mappedStatus = _bilyonerPeriodMap[periodType] ?? '';
-  if (_isFinished(mappedStatus)) return;
-  
-  _addMissingFixture(fid, v);
-  return;
-}
+    // FIX: Biten maçları tekrar ekleme
+    final mappedStatus = _bilyonerPeriodMap[periodType] ?? '';
+    if (_isFinished(mappedStatus)) return;
 
-  final ts       = v['ts'] as Map<String, dynamic>?;
+    _addMissingFixture(fid, v);
+    return;
+  }
+
+  final ts        = v['ts'] as Map<String, dynamic>?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
   final status    = _bilyonerPeriodMap[periodType] ?? '1H';
 
-  // ts.ts = bu period içindeki dakika (toplam değil)
-  // SECOND_HALF ts=5 → toplam 50', ET ts=3 → toplam 93'
   final rawTs = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
 
-  // Elapsed hesaplama:
-  // 1) Bilyoner gerçek ts gönderiyorsa kullan
-  // 2) ts=0 ise kickoff timestamp'ten hesapla (en güvenilir yol)
-  // _onBilyonerData içinde — elapsed hesaplama bloğunu değiştir
-
-int? elapsed;
-if (rawTs != null && rawTs > 0) {
-  elapsed = _totalElapsed(status, rawTs);
-}
-
-// ✅ Kickoff bazlı elapsed ile karşılaştır — Bilyoner ts takılıysa düzelt
-final kickoffTs = fixture.kickoffTs;
-if (kickoffTs != null && kickoffTs > 0) {
-  final kickoffElapsed = _calcElapsedFromKickoff(status, kickoffTs);
-  // Bilyoner ts'den büyükse kickoff hesabını tercih et
-  if (elapsed == null || kickoffElapsed > elapsed) {
-    elapsed = kickoffElapsed;
+  // FIX: 2H/ET başlangıç zamanlarını kaydet
+  if (status == '2H' && fixture.statusShort != '2H') {
+    fixture.secondHalfStartTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   }
-}
+  if (status == 'ET' && fixture.statusShort != 'ET') {
+    fixture.extraTimeStartTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  }
+
+  // FIX: Elapsed hesaplama — Bilyoner ts takılıysa kendi timestamp'imizden hesapla
+  int? elapsed;
+
+  if (rawTs != null && rawTs > 0) {
+    elapsed = _totalElapsed(status, rawTs);
+  }
+
+  // 1H ts=0: kickoff bazlı
+  if (status == '1H' && (rawTs == null || rawTs == 0)) {
+    final kickoffTs = fixture.kickoffTs;
+    if (kickoffTs != null && kickoffTs > 0) {
+      final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      elapsed = ((nowTs - kickoffTs) / 60).round().clamp(0, 52);
+    }
+  }
+
+  // 2H: Bilyoner ts takılıysa kendi startTs'imizden hesapla, büyük olanı al
+  if (status == '2H' && fixture.secondHalfStartTs != null) {
+    final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final calc  = 45 + ((nowTs - fixture.secondHalfStartTs!) / 60).round();
+    final clamped = calc.clamp(45, 97);
+    if (elapsed == null || clamped > elapsed!) elapsed = clamped;
+  }
+
+  // ET: aynı mantık
+  if (status == 'ET' && fixture.extraTimeStartTs != null) {
+    final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final calc  = 90 + ((nowTs - fixture.extraTimeStartTs!) / 60).round();
+    final clamped = calc.clamp(90, 122);
+    if (elapsed == null || clamped > elapsed!) elapsed = clamped;
+  }
 
   _bilyonerUpdates++;
   fixture.statusShort = status;
@@ -386,7 +418,6 @@ if (kickoffTs != null && kickoffTs > 0) {
   }
 
   // Throttle: aynı elapsed'ı 30s içinde tekrar yazma
-  // Ama elapsed değiştiyse throttle'ı atla
   final last = _lastWrite[fid];
   final lastElapsed = _lastElapsedWritten[fid];
   final elapsedChanged = elapsed != null && elapsed != lastElapsed;
@@ -399,7 +430,6 @@ if (kickoffTs != null && kickoffTs > 0) {
     'status_short': status,
     'updated_at':   DateTime.now().toIso8601String(),
     if (elapsed != null) 'elapsed_time': elapsed,
-    // Nesine korumalı değilse skoru da yaz
     if (!isGuarded) ...{
       'home_score': homeScore, 'away_score': awayScore, 'score_source': 'bilyoner',
     },
@@ -426,7 +456,7 @@ if (kickoffTs != null && kickoffTs > 0) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// NESİNE — sadece skor (elapsed Bilyoner'dan geliyor)
+// NESİNE — sadece skor
 // ══════════════════════════════════════════════════════════════
 Future<void> _nesineLoop(String name) async {
   while (true) {
@@ -455,9 +485,6 @@ Future<void> _nesineConnect(String name) async {
         print('[$name] ✅ Nesine bağlandı');
         send('42["joinroom","LiveBets_V3"]');
         ping?.cancel();
-        // Nesine socket.io: sunucu "2" gönderir, biz "3" ile cevap veririz
-        // Biz "2" göndermiyoruz — sunucu kendi ping'ini yönetiyor
-        // Ekstra keepalive: 25s'de bir "42["heartbeat"]" gönder
         ping = Timer.periodic(const Duration(seconds: 25), (_) {
           send('42["heartbeat"]');
         });
@@ -494,7 +521,7 @@ int? _resolveNesine(int bid, Map item) {
   if (nHome.isEmpty) return null;
   _LiveMatch? best; double bestScore = 0;
   for (final f in _fixtures.values) {
-    final hs = _sim(nHome, _norm(f.homeTeam));
+    final hs  = _sim(nHome, _norm(f.homeTeam));
     final as_ = _sim(nAway, _norm(f.awayTeam));
     if (hs < 0.45 || as_ < 0.45) continue;
     final s = (hs + as_) / 2;
@@ -563,7 +590,9 @@ void _onNesineStatus(String name, int bid, Map item) {
   }
 }
 
-// ─── Yükle ─────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// FIXTURES YÜKLEME
+// ──────────────────────────────────────────────────────────────
 Future<void> _loadFixtures() async {
   try {
     final res = await http.get(
@@ -583,7 +612,6 @@ Future<void> _loadFixtures() async {
         _fixtures[fid]!.homeScore = _int(r['home_score']) ?? _fixtures[fid]!.homeScore;
         _fixtures[fid]!.awayScore = _int(r['away_score']) ?? _fixtures[fid]!.awayScore;
       } else {
-        // kickoff timestamp'i raw_data'dan çek
         int? kickoffTs;
         try {
           final rd = jsonDecode(r['raw_data'] as String? ?? '{}');
@@ -608,8 +636,9 @@ Future<void> _loadFixtures() async {
   } catch (e) { print('⚠️ loadFixtures: $e'); }
 }
 
-// Uzun süredir güncellenmeyen maçları DB'den temizle
-// Bilyoner FULL_TIME eventi kaçırılınca maçlar takılı kalıyor
+// ──────────────────────────────────────────────────────────────
+// STALE MAÇ TEMİZLEME
+// ──────────────────────────────────────────────────────────────
 Future<void> _cleanStaleMatches() async {
   try {
     final res = await http.get(
@@ -620,7 +649,7 @@ Future<void> _cleanStaleMatches() async {
     ).timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) return;
 
-    final now = DateTime.now().toUtc();
+    final now   = DateTime.now().toUtc();
     final stale = <int>[];
 
     for (final r in (jsonDecode(res.body) as List).cast<Map>()) {
@@ -630,8 +659,6 @@ Future<void> _cleanStaleMatches() async {
       final updated = DateTime.tryParse(updatedStr);
       if (updated == null) continue;
       final age = now.difference(updated).inMinutes;
-      // Bilyoner WS her 30-60s'de güncelleme gönderiyor
-      // 5 dakikadır güncelleme yoksa maç bitmiş veya stale
       if (age > 5) stale.add(fid);
     }
 
@@ -653,6 +680,9 @@ Future<void> _cleanStaleMatches() async {
   } catch (e) { print('⚠️ cleanStaleMatches: $e'); }
 }
 
+// ──────────────────────────────────────────────────────────────
+// SUPABASE
+// ──────────────────────────────────────────────────────────────
 Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
   try {
     final res = await http.patch(
@@ -665,36 +695,42 @@ Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
   } catch (e) { print('❌ SB: $e'); }
 }
 
-// Kickoff timestamp'ten anlık elapsed hesapla
-// Standart futbol: 1Y ~47dk, HT ~3dk, 2Y ~47dk
+// ──────────────────────────────────────────────────────────────
+// ELAPSED HESAPLAMA
+// ──────────────────────────────────────────────────────────────
+
+/// Kickoff timestamp'ten anlık elapsed hesapla (1H ts=0 durumu için)
 int _calcElapsedFromKickoff(String status, int kickoffTs) {
   final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  final sinceKickoff = ((nowTs - kickoffTs) / 60).round(); // dakika
+  final sinceKickoff = ((nowTs - kickoffTs) / 60).round();
 
   return switch (status) {
-    '1H' => sinceKickoff.clamp(0, 52),           // max 45+7 stoppage
-    'HT' => 45,                                   // devre arası sabit
-    '2H' => (45 + (sinceKickoff - 48)).clamp(45, 97), // 48dk = 1Y+HT
-    'ET' => (90 + (sinceKickoff - 97)).clamp(90, 122), // 97dk = 1Y+HT+2Y
+    '1H' => sinceKickoff.clamp(0, 52),
+    'HT' => 45,
+    '2H' => (45 + (sinceKickoff - 48)).clamp(45, 97),
+    'ET' => (90 + (sinceKickoff - 97)).clamp(90, 122),
     'BT' => 105,
     'P'  => 120,
     _    => sinceKickoff.clamp(0, 120),
   };
 }
 
-// Period içi dakikayı toplam maç dakikasına çevir
+/// Period içi dakikayı toplam maç dakikasına çevir
 int _totalElapsed(String status, int periodElapsed) {
   return switch (status) {
-    '1H'   => periodElapsed,           // 1. yarı: direkt
-    'HT'   => 45,                      // Devre arası: 45
-    '2H'   => 45 + periodElapsed,      // 2. yarı: 45 + period
-    'ET'   => 90 + periodElapsed,      // Uzatma: 90 + period
-    'BT'   => 105,                     // Uzatma D.A.: 105
-    'P'    => 120,                     // Penaltılar: 120
+    '1H'   => periodElapsed,
+    'HT'   => 45,
+    '2H'   => 45 + periodElapsed,
+    'ET'   => 90 + periodElapsed,
+    'BT'   => 105,
+    'P'    => 120,
     _      => periodElapsed,
   };
 }
 
+// ──────────────────────────────────────────────────────────────
+// YARDIMCI FONKSİYONLAR
+// ──────────────────────────────────────────────────────────────
 bool _isFinished(String s) =>
     ['FT','AET','PEN','PST','CANC','ABD','AWD','WO'].contains(s);
 
