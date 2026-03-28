@@ -334,11 +334,13 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
 
   final fixture = _fixtures[fid];
   if (fixture == null) {
-    // DB'de yok — bu maç fixture_sync tarafından yazılmamış
-    // Bilyoner verisinden DB'ye ekle
-    _addMissingFixture(fid, v);
-    return;
-  }
+  // ✅ Biten maçları tekrar ekleme (C zaten sildiyse D re-insert etmesin)
+  final mappedStatus = _bilyonerPeriodMap[periodType] ?? '';
+  if (_isFinished(mappedStatus)) return;
+  
+  _addMissingFixture(fid, v);
+  return;
+}
 
   final ts       = v['ts'] as Map<String, dynamic>?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
