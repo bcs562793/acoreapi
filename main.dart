@@ -73,6 +73,8 @@ final Set<int>             _nesineGuarded = {}; // nesine_bid olan fixture_id'le
 
 int _nesineGoals = 0, _bilyonerUpdates = 0, _writeCount = 0;
 final Map<int, DateTime> _lastWrite        = {};
+// Period başlangıç zamanı — ts=0 geldiğinde elapsed hesaplamak için
+final Map<String, DateTime> _periodStartTime = {}; // '$fid-$status' → DateTime
 final Map<int, int>      _lastElapsedWritten = {};
 
 Future<void> main() async {
@@ -344,7 +346,30 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   // ts.ts = bu period içindeki dakika (toplam değil)
   // SECOND_HALF ts=5 → toplam 50', ET ts=3 → toplam 93'
   final rawTs = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
-  final elapsed = rawTs != null ? _totalElapsed(status, rawTs) : null;
+
+  // ts=0 veya ts=null ise period başlangıcını kaydet ve elapsed hesapla
+  int? elapsed;
+  final periodKey = '$fid-$status';
+  if (rawTs != null && rawTs > 0) {
+    // Gerçek ts var — period timer'ı güncelle
+    elapsed = _totalElapsed(status, rawTs);
+    _periodStartTime[periodKey] = DateTime.now().subtract(Duration(minutes: rawTs));
+  } else if (rawTs == 0 || rawTs == null) {
+    // ts=0 veya null — period yeni başladı veya Bilyoner göndermiyoe
+    if (!_periodStartTime.containsKey(periodKey)) {
+      // İlk kez bu period'u gördük — başlangıç saatini kaydet
+      final baseMinute = switch (status) {
+        '2H' => 45, 'ET' => 90, 'BT' => 105, _ => 0,
+      };
+      _periodStartTime[periodKey] = DateTime.now().subtract(Duration(minutes: rawTs ?? 0));
+      elapsed = baseMinute;
+    } else {
+      // Daha önce kaydettik — geçen süreyi hesapla
+      final started = _periodStartTime[periodKey]!;
+      final sinceStart = DateTime.now().difference(started).inMinutes;
+      elapsed = _totalElapsed(status, sinceStart);
+    }
+  }
 
   _bilyonerUpdates++;
   fixture.statusShort = status;
@@ -357,6 +382,8 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
     ).ignore();
     _fixtures.remove(fid);
     _nesineGuarded.remove(fid);
+    // Period timer temizle
+    _periodStartTime.removeWhere((k, _) => k.startsWith('$fid-'));
     return;
   }
 
