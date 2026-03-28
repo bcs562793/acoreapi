@@ -215,7 +215,10 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final status = _bilyonerPeriodMap[periodType] ?? '1H';
 
   // FIX: Biten maçları tekrar ekleme
-  if (_isFinished(status)) { _addingFids.remove(fid); return; }
+  if (_isFinished(status) || status == 'NS') {
+  _addingFids.remove(fid);
+  return;
+}
 
   final ts     = v['ts'] as Map?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
