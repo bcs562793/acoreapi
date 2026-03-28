@@ -325,6 +325,15 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
   final atn = event['atn'] as String? ?? '';
   if (htn.isEmpty || atn.isEmpty) return;
 
+    // ✅ BURAYA EKLE:
+  final esdl = _int(event['esdl']) ?? 0;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  if (esdl > 0 && esdl > nowMs + 60000) return;
+
+  final syntheticV = { ... };
+  _addMissingFixture(fid, syntheticV);
+}
+
   final syntheticV = {
     'sbsEventId': fid,
     'htn': htn, 'atn': atn,
