@@ -354,16 +354,22 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   // Elapsed hesaplama:
   // 1) Bilyoner gerçek ts gönderiyorsa kullan
   // 2) ts=0 ise kickoff timestamp'ten hesapla (en güvenilir yol)
-  int? elapsed;
-  if (rawTs != null && rawTs > 0) {
-    elapsed = _totalElapsed(status, rawTs);
-  } else {
-    // ts=0 veya null → kickoff'tan hesapla
-    final kickoffTs = fixture?.kickoffTs;
-    if (kickoffTs != null && kickoffTs > 0) {
-      elapsed = _calcElapsedFromKickoff(status, kickoffTs);
-    }
+  // _onBilyonerData içinde — elapsed hesaplama bloğunu değiştir
+
+int? elapsed;
+if (rawTs != null && rawTs > 0) {
+  elapsed = _totalElapsed(status, rawTs);
+}
+
+// ✅ Kickoff bazlı elapsed ile karşılaştır — Bilyoner ts takılıysa düzelt
+final kickoffTs = fixture.kickoffTs;
+if (kickoffTs != null && kickoffTs > 0) {
+  final kickoffElapsed = _calcElapsedFromKickoff(status, kickoffTs);
+  // Bilyoner ts'den büyükse kickoff hesabını tercih et
+  if (elapsed == null || kickoffElapsed > elapsed) {
+    elapsed = kickoffElapsed;
   }
+}
 
   _bilyonerUpdates++;
   fixture.statusShort = status;
