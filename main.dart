@@ -330,10 +330,6 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
   final nowMs = DateTime.now().millisecondsSinceEpoch;
   if (esdl > 0 && esdl > nowMs + 60000) return;
 
-  final syntheticV = { ... };
-  _addMissingFixture(fid, syntheticV);
-}
-
   final syntheticV = {
     'sbsEventId': fid,
     'htn': htn, 'atn': atn,
