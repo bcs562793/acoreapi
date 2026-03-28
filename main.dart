@@ -266,10 +266,11 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
     if (res.statusCode < 300) {
       print('[BLY] ➕ fid=$fid eklendi: $htn vs $atn [$status $elapsed\']');
       _fixtures[fid] = _LiveMatch(
-        fixtureId: fid, homeTeam: htn, awayTeam: atn,
-        homeScore: homeScore, awayScore: awayScore,
-        statusShort: status, rawData: rawData,
-      );
+  fixtureId: fid, homeTeam: htn, awayTeam: atn,
+  homeScore: homeScore, awayScore: awayScore,
+  statusShort: status, rawData: rawData,
+  kickoffTs: tsVal > 0 ? tsVal : null,  // ✅ eklendi
+);
       _writeCount++;
     } else {
       print('[BLY] ⚠️ fid=$fid eklenemedi: ${res.statusCode}');
