@@ -195,7 +195,8 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final ts     = v['ts'] as Map?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
-  final elapsed   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
+  final rawTs0   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
+  final elapsed  = rawTs0 != null ? _totalElapsed(status, rawTs0) : null;
 
   if (htn.isEmpty) return; // takım ismi yoksa ekleme
 
@@ -580,9 +581,8 @@ Future<void> _cleanStaleMatches() async {
   try {
     final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
-          '?select=fixture_id,home_team,away_team,updated_at,status_short'
-          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'
-          '&score_source=eq.bilyoner'),
+          '?select=fixture_id,home_team,away_team,updated_at,status_short,score_source'
+          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'),
       headers: _sbHeaders(),
     ).timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) return;
@@ -597,8 +597,9 @@ Future<void> _cleanStaleMatches() async {
       final updated = DateTime.tryParse(updatedStr);
       if (updated == null) continue;
       final age = now.difference(updated).inMinutes;
-      // 15 dakikadır güncellenmemiş → maç bitmiş olabilir
-      if (age > 15) stale.add(fid);
+      // Bilyoner WS her 30-60s'de güncelleme gönderiyor
+      // 5 dakikadır güncelleme yoksa maç bitmiş veya stale
+      if (age > 5) stale.add(fid);
     }
 
     if (stale.isEmpty) return;
