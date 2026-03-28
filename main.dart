@@ -232,8 +232,8 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
     elapsed = switch (status) {
       '1H' => since.clamp(0, 52),
       'HT' => 45,
-      '2H' => (45 + (since - 48)).clamp(45, 97),
-      'ET' => (90 + (since - 97)).clamp(90, 122),
+      '2H' => (45 + (since - 60)).clamp(45, 97),
+      'ET' => (90 + (since - 120)).clamp(90, 122),
       'BT' => 105,
       'P'  => 120,
       _    => since.clamp(0, 120),
