@@ -103,6 +103,8 @@ Future<void> main() async {
 
   await _loadFixtures();
   Timer.periodic(const Duration(minutes: 3), (_) => _loadFixtures());
+  // Her 3 dakikada stale maçları temizle (FT eventi kaçırılmış olabilir)
+  Timer.periodic(const Duration(minutes: 3), (_) => _cleanStaleMatches());
   Timer.periodic(const Duration(minutes: 5), (_) =>
       print('📊 Maç:${_fixtures.length} NesEşl:${_bidToFid.length}'
             ' Gol:$_nesineGoals Bly:$_bilyonerUpdates Yaz:$_writeCount'));
@@ -565,6 +567,51 @@ Future<void> _loadFixtures() async {
     _nesineGuarded.removeWhere((fid) => !liveFids.contains(fid));
     print('📋 ${_fixtures.length} maç | ${_nesineGuarded.length} Nesine korumalı');
   } catch (e) { print('⚠️ loadFixtures: $e'); }
+}
+
+// Uzun süredir güncellenmeyen maçları DB'den temizle
+// Bilyoner FULL_TIME eventi kaçırılınca maçlar takılı kalıyor
+Future<void> _cleanStaleMatches() async {
+  try {
+    final res = await http.get(
+      Uri.parse('$_sbUrl/rest/v1/live_matches'
+          '?select=fixture_id,home_team,away_team,updated_at,status_short'
+          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'
+          '&score_source=eq.bilyoner'),
+      headers: _sbHeaders(),
+    ).timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) return;
+
+    final now = DateTime.now().toUtc();
+    final stale = <int>[];
+
+    for (final r in (jsonDecode(res.body) as List).cast<Map>()) {
+      final fid = _int(r['fixture_id']); if (fid == null) continue;
+      final updatedStr = r['updated_at'] as String? ?? '';
+      if (updatedStr.isEmpty) continue;
+      final updated = DateTime.tryParse(updatedStr);
+      if (updated == null) continue;
+      final age = now.difference(updated).inMinutes;
+      // 15 dakikadır güncellenmemiş → maç bitmiş olabilir
+      if (age > 15) stale.add(fid);
+    }
+
+    if (stale.isEmpty) return;
+    print('🧹 ${stale.length} stale maç temizleniyor: $stale');
+
+    for (final fid in stale) {
+      try {
+        await http.delete(
+          Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
+          headers: _sbHeaders(),
+        ).timeout(const Duration(seconds: 8));
+        _fixtures.remove(fid);
+        _nesineGuarded.remove(fid);
+        _bidToFid.removeWhere((_, v) => v == fid);
+        print('🗑️ Stale maç silindi: fid=$fid');
+      } catch (e) { print('⚠️ Stale silme ($fid): $e'); }
+    }
+  } catch (e) { print('⚠️ cleanStaleMatches: $e'); }
 }
 
 Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
