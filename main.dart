@@ -212,8 +212,10 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final compId = _int(v['competitionId'] ?? v['cid']) ?? 0;
   final esdl   = _int(v['esdl']) ?? 0;
   final periodType = v['periodType'] as String? ?? '';
-  final status = _bilyonerPeriodMap[periodType] ?? '1H';
-
+// periodType boşsa mevcut fixture durumunu koru, '1H' varsayımı yapma
+  final status = _bilyonerPeriodMap[periodType] 
+    ?? fixture?.statusShort 
+    ?? '1H';
   if (_isFinished(status) || status == 'NS') {
     _addingFids.remove(fid);
     return;
@@ -389,10 +391,12 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   // time alanından direkt oku: "33'" → 33, "74'" → 74
   int? elapsed;
   final timeStr = v['time'] as String? ?? '';
-  if (timeStr.isNotEmpty) {
-    final cleaned = timeStr.replaceAll("'", '').trim();
-    elapsed = int.tryParse(cleaned);
-  }
+if (timeStr.isNotEmpty) {
+  final cleaned = timeStr.replaceAll("'", '').trim();
+  // "45+2" gibi uzatma zamanını doğru parse et
+  final base = cleaned.split('+').first.trim();
+  elapsed = int.tryParse(base);
+}
   // time yoksa veya sayısal değilse esdl bazlı hesapla
   if (elapsed == null || elapsed <= 0) {
     elapsed = null;
