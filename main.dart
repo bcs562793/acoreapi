@@ -386,23 +386,32 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
   final status    = _bilyonerPeriodMap[periodType] ?? '1H';
 
-  // esdl bazlı elapsed hesapla — ts['ts'] güvenilmez, esdl her zaman var
+  // time alanından direkt oku: "33'" → 33, "74'" → 74
   int? elapsed;
-  final esdlRaw = _int(v['esdl']) ?? (fixture.kickoffTs != null ? fixture.kickoffTs! * 1000 : 0);
-  if (esdlRaw > 0) {
-    final kickoff = esdlRaw > 9999999999 ? esdlRaw ~/ 1000 : esdlRaw;
-    final nowTs   = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final since   = ((nowTs - kickoff) / 60).round();
-    elapsed = switch (status) {
-      '1H' => since.clamp(0, 52),
-      'HT' => 45,
-      '2H' => (45 + (since - 60)).clamp(45, 97),
-      'ET' => (90 + (since - 120)).clamp(90, 122),
-      'BT' => 105,
-      'P'  => 120,
-      _    => since.clamp(0, 120),
-    };
-    if (elapsed <= 0) elapsed = null;
+  final timeStr = v['time'] as String? ?? '';
+  if (timeStr.isNotEmpty) {
+    final cleaned = timeStr.replaceAll("'", '').trim();
+    elapsed = int.tryParse(cleaned);
+  }
+  // time yoksa veya sayısal değilse esdl bazlı hesapla
+  if (elapsed == null || elapsed <= 0) {
+    elapsed = null;
+    final esdlRaw = _int(v['esdl']) ?? (fixture.kickoffTs != null ? fixture.kickoffTs! * 1000 : 0);
+    if (esdlRaw > 0) {
+      final kickoff = esdlRaw > 9999999999 ? esdlRaw ~/ 1000 : esdlRaw;
+      final nowTs   = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final since   = ((nowTs - kickoff) / 60).round();
+      elapsed = switch (status) {
+        '1H' => since.clamp(0, 52),
+        'HT' => 45,
+        '2H' => (45 + (since - 60)).clamp(45, 97),
+        'ET' => (90 + (since - 120)).clamp(90, 122),
+        'BT' => 105,
+        'P'  => 120,
+        _    => since.clamp(0, 120),
+      };
+      if (elapsed <= 0) elapsed = null;
+    }
   }
 
   _bilyonerUpdates++;
