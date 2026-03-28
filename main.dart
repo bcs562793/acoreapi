@@ -224,7 +224,7 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
   final rawTs0   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
-  final elapsed  = rawTs0 != null ? _totalElapsed(status, rawTs0) : null;
+  final elapsed  = rawTs0 != null ? _totalElapsed(status, (rawTs0 / 60).round()) : null;
 
   if (htn.isEmpty) { _addingFids.remove(fid); return; }
 
@@ -383,7 +383,7 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   int? elapsed;
 
   if (rawTs != null && rawTs > 0) {
-    elapsed = _totalElapsed(status, rawTs);
+    elapsed = _totalElapsed(status, (rawTs / 60).round());
   }
 
   // 1H ts=0: kickoff bazlı
@@ -652,7 +652,7 @@ Future<void> _cleanStaleMatches() async {
     final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
           '?select=fixture_id,home_team,away_team,updated_at,status_short,score_source'
-          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE, NS)'),
+          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
       headers: _sbHeaders(),
     ).timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) return;
