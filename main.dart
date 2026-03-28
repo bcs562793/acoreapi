@@ -421,10 +421,16 @@ if (timeStr.isNotEmpty) {
 
   if (_isFinished(status)) {
     print('[$name] 🏁 [BLY] fid=$fid bitti');
-    http.delete(
-      Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
-      headers: _sbHeaders(),
-    ).ignore();
+    http.patch(
+  Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
+  headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
+  body: jsonEncode({
+    'status_short': status,
+    'home_score':   homeScore,
+    'away_score':   awayScore,
+    'updated_at':   DateTime.now().toIso8601String(),
+  }),
+).ignore();
     _fixtures.remove(fid);
     _nesineGuarded.remove(fid);
     return;
@@ -595,8 +601,15 @@ void _onNesineStatus(String name, int bid, Map item) {
   print('[$name] 📌 [NES] fid=$fid ${fixture.statusShort} → $status');
   fixture.statusShort = status;
   if (_isFinished(status)) {
-    http.delete(Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
-        headers: _sbHeaders()).ignore();
+    // YENİ
+http.patch(
+  Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
+  headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
+  body: jsonEncode({
+    'status_short': status,
+    'updated_at':   DateTime.now().toIso8601String(),
+  }),
+).ignore();
     _fixtures.remove(fid);
     _bidToFid.remove(bid);
     _nesineGuarded.remove(fid);
