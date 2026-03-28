@@ -213,9 +213,7 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final esdl   = _int(v['esdl']) ?? 0;
   final periodType = v['periodType'] as String? ?? '';
 // periodType boşsa mevcut fixture durumunu koru, '1H' varsayımı yapma
-  final status = _bilyonerPeriodMap[periodType] 
-    ?? fixture?.statusShort 
-    ?? '1H';
+  final status = _bilyonerPeriodMap[periodType] ?? fixture.statusShort;
   if (_isFinished(status) || status == 'NS') {
     _addingFids.remove(fid);
     return;
