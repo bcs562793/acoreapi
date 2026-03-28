@@ -72,7 +72,8 @@ final Map<int, int>        _bidToFid      = {};
 final Set<int>             _nesineGuarded = {}; // nesine_bid olan fixture_id'ler
 
 int _nesineGoals = 0, _bilyonerUpdates = 0, _writeCount = 0;
-final Map<int, DateTime> _lastWrite = {};
+final Map<int, DateTime> _lastWrite        = {};
+final Map<int, int>      _lastElapsedWritten = {};
 
 Future<void> main() async {
   print('╔══════════════════════════════════════╗');
@@ -358,10 +359,14 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
     return;
   }
 
-  // Throttle 30s
+  // Throttle: aynı elapsed'ı 30s içinde tekrar yazma
+  // Ama elapsed değiştiyse throttle'ı atla
   final last = _lastWrite[fid];
-  if (last != null && DateTime.now().difference(last).inSeconds < 30) return;
+  final lastElapsed = _lastElapsedWritten[fid];
+  final elapsedChanged = elapsed != null && elapsed != lastElapsed;
+  if (!elapsedChanged && last != null && DateTime.now().difference(last).inSeconds < 30) return;
   _lastWrite[fid] = DateTime.now();
+  if (elapsed != null) _lastElapsedWritten[fid] = elapsed;
 
   final isGuarded = _nesineGuarded.contains(fid);
   final data = <String, dynamic>{
