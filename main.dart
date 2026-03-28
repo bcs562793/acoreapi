@@ -437,7 +437,7 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final data = <String, dynamic>{
     'status_short': status,
     'updated_at':   DateTime.now().toIso8601String(),
-    if (elapsed != null) 'elapsed_time': elapsed,
+    if (elapsed != null && elapsed > 0) 'elapsed_time': elapsed,
     if (!isGuarded) ...{
       'home_score': homeScore, 'away_score': awayScore, 'score_source': 'bilyoner',
     },
