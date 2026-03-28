@@ -82,7 +82,7 @@ final Map<int, int>      _lastElapsedWritten = {};
 
 Future<void> main() async {
   print('╔══════════════════════════════════════╗');
-  print('║  ⚡ Score Listener v7                ║');
+  print('║  ⚡ Score Listener v8                ║');
   print('║  📡 Nesine WS (skor) +               ║');
   print('║  📡 Bilyoner WS (elapsed+status+skor)║');
   print('╚══════════════════════════════════════╝');
@@ -95,7 +95,7 @@ Future<void> main() async {
       ..statusCode = 200
       ..headers.contentType = ContentType.json
       ..write(jsonEncode({
-        'ok': true, 'v': 7,
+        'ok': true, 'v': 8,
         'fixtures': _fixtures.length,
         'nesine_mapped': _bidToFid.length,
         'nesine_guarded': _nesineGuarded.length,
@@ -214,17 +214,32 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final periodType = v['periodType'] as String? ?? '';
   final status = _bilyonerPeriodMap[periodType] ?? '1H';
 
-  // FIX: Biten maçları tekrar ekleme
   if (_isFinished(status) || status == 'NS') {
-  _addingFids.remove(fid);
-  return;
-}
+    _addingFids.remove(fid);
+    return;
+  }
 
-  final ts     = v['ts'] as Map?;
+  final ts        = v['ts'] as Map?;
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
-  final rawTs0   = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
-  final elapsed  = rawTs0 != null ? _totalElapsed(status, (rawTs0 / 60).round()) : null;
+
+  // esdl bazlı elapsed hesapla
+  int? elapsed;
+  if (esdl > 0) {
+    final kickoff = esdl > 9999999999 ? esdl ~/ 1000 : esdl;
+    final nowTs   = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final since   = ((nowTs - kickoff) / 60).round();
+    elapsed = switch (status) {
+      '1H' => since.clamp(0, 52),
+      'HT' => 45,
+      '2H' => (45 + (since - 48)).clamp(45, 97),
+      'ET' => (90 + (since - 97)).clamp(90, 122),
+      'BT' => 105,
+      'P'  => 120,
+      _    => since.clamp(0, 120),
+    };
+    if (elapsed <= 0) elapsed = null;
+  }
 
   if (htn.isEmpty) { _addingFids.remove(fid); return; }
 
@@ -293,7 +308,6 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
         fixtureId: fid, homeTeam: htn, awayTeam: atn,
         homeScore: homeScore, awayScore: awayScore,
         statusShort: status, rawData: rawData,
-        // FIX: kickoffTs artık geçiriliyor
         kickoffTs: tsVal > 0 ? tsVal : null,
       );
       _writeCount++;
@@ -325,8 +339,7 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
   final atn = event['atn'] as String? ?? '';
   if (htn.isEmpty || atn.isEmpty) return;
 
-    // ✅ BURAYA EKLE:
-  final esdl = _int(event['esdl']) ?? 0;
+  final esdl  = _int(event['esdl']) ?? 0;
   final nowMs = DateTime.now().millisecondsSinceEpoch;
   if (esdl > 0 && esdl > nowMs + 60000) return;
 
@@ -356,9 +369,13 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
 
   final fixture = _fixtures[fid];
   if (fixture == null) {
-    // FIX: Biten maçları tekrar ekleme
     final mappedStatus = _bilyonerPeriodMap[periodType] ?? '';
     if (_isFinished(mappedStatus)) return;
+
+    // Henüz başlamamış maçları ekleme
+    final esdlRaw = _int(v['esdl']) ?? 0;
+    final nowMs   = DateTime.now().millisecondsSinceEpoch;
+    if (esdlRaw > 0 && esdlRaw > nowMs + 60000) return;
 
     _addMissingFixture(fid, v);
     return;
@@ -369,46 +386,23 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
   final status    = _bilyonerPeriodMap[periodType] ?? '1H';
 
-  final rawTs = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
-
-  // FIX: 2H/ET başlangıç zamanlarını kaydet
-  if (status == '2H' && fixture.statusShort != '2H') {
-    fixture.secondHalfStartTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  }
-  if (status == 'ET' && fixture.statusShort != 'ET') {
-    fixture.extraTimeStartTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  }
-
-  // FIX: Elapsed hesaplama — Bilyoner ts takılıysa kendi timestamp'imizden hesapla
+  // esdl bazlı elapsed hesapla — ts['ts'] güvenilmez, esdl her zaman var
   int? elapsed;
-
-  if (rawTs != null && rawTs > 0) {
-    elapsed = _totalElapsed(status, (rawTs / 60).round());
-  }
-
-  // 1H ts=0: kickoff bazlı
-  if (status == '1H' && (rawTs == null || rawTs == 0)) {
-    final kickoffTs = fixture.kickoffTs;
-    if (kickoffTs != null && kickoffTs > 0) {
-      final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      elapsed = ((nowTs - kickoffTs) / 60).round().clamp(0, 52);
-    }
-  }
-
-  // 2H: Bilyoner ts takılıysa kendi startTs'imizden hesapla, büyük olanı al
-  if (status == '2H' && fixture.secondHalfStartTs != null) {
-    final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final calc  = 45 + ((nowTs - fixture.secondHalfStartTs!) / 60).round();
-    final clamped = calc.clamp(45, 97);
-    if (elapsed == null || clamped > elapsed!) elapsed = clamped;
-  }
-
-  // ET: aynı mantık
-  if (status == 'ET' && fixture.extraTimeStartTs != null) {
-    final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final calc  = 90 + ((nowTs - fixture.extraTimeStartTs!) / 60).round();
-    final clamped = calc.clamp(90, 122);
-    if (elapsed == null || clamped > elapsed!) elapsed = clamped;
+  final esdlRaw = _int(v['esdl']) ?? (fixture.kickoffTs != null ? fixture.kickoffTs! * 1000 : 0);
+  if (esdlRaw > 0) {
+    final kickoff = esdlRaw > 9999999999 ? esdlRaw ~/ 1000 : esdlRaw;
+    final nowTs   = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final since   = ((nowTs - kickoff) / 60).round();
+    elapsed = switch (status) {
+      '1H' => since.clamp(0, 52),
+      'HT' => 45,
+      '2H' => (45 + (since - 48)).clamp(45, 97),
+      'ET' => (90 + (since - 97)).clamp(90, 122),
+      'BT' => 105,
+      'P'  => 120,
+      _    => since.clamp(0, 120),
+    };
+    if (elapsed <= 0) elapsed = null;
   }
 
   _bilyonerUpdates++;
@@ -426,8 +420,8 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   }
 
   // Throttle: aynı elapsed'ı 30s içinde tekrar yazma
-  final last = _lastWrite[fid];
-  final lastElapsed = _lastElapsedWritten[fid];
+  final last         = _lastWrite[fid];
+  final lastElapsed  = _lastElapsedWritten[fid];
   final elapsedChanged = elapsed != null && elapsed != lastElapsed;
   if (!elapsedChanged && last != null && DateTime.now().difference(last).inSeconds < 30) return;
   _lastWrite[fid] = DateTime.now();
@@ -437,7 +431,7 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   final data = <String, dynamic>{
     'status_short': status,
     'updated_at':   DateTime.now().toIso8601String(),
-    if (elapsed != null && elapsed > 0) 'elapsed_time': elapsed,
+    if (elapsed != null) 'elapsed_time': elapsed,
     if (!isGuarded) ...{
       'home_score': homeScore, 'away_score': awayScore, 'score_source': 'bilyoner',
     },
@@ -707,7 +701,7 @@ Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
 // ELAPSED HESAPLAMA
 // ──────────────────────────────────────────────────────────────
 
-/// Kickoff timestamp'ten anlık elapsed hesapla (1H ts=0 durumu için)
+/// Kickoff timestamp'ten anlık elapsed hesapla
 int _calcElapsedFromKickoff(String status, int kickoffTs) {
   final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   final sinceKickoff = ((nowTs - kickoffTs) / 60).round();
