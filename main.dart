@@ -58,11 +58,13 @@ class _LiveMatch {
   String       statusShort;
   String       rawData;
   int?         nesineBid;
+  int?         kickoffTs; // Unix timestamp (saniye)
 
   _LiveMatch({
     required this.fixtureId, required this.homeTeam, required this.awayTeam,
     required this.homeScore, required this.awayScore,
-    required this.statusShort, required this.rawData, this.nesineBid,
+    required this.statusShort, required this.rawData,
+    this.nesineBid, this.kickoffTs,
   });
 }
 
@@ -73,8 +75,7 @@ final Set<int>             _nesineGuarded = {}; // nesine_bid olan fixture_id'le
 
 int _nesineGoals = 0, _bilyonerUpdates = 0, _writeCount = 0;
 final Map<int, DateTime> _lastWrite        = {};
-// Period başlangıç zamanı — ts=0 geldiğinde elapsed hesaplamak için
-final Map<String, DateTime> _periodStartTime = {}; // '$fid-$status' → DateTime
+
 final Map<int, int>      _lastElapsedWritten = {};
 
 Future<void> main() async {
@@ -347,27 +348,17 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
   // SECOND_HALF ts=5 → toplam 50', ET ts=3 → toplam 93'
   final rawTs = ts != null ? int.tryParse(ts['ts']?.toString() ?? '') : null;
 
-  // ts=0 veya ts=null ise period başlangıcını kaydet ve elapsed hesapla
+  // Elapsed hesaplama:
+  // 1) Bilyoner gerçek ts gönderiyorsa kullan
+  // 2) ts=0 ise kickoff timestamp'ten hesapla (en güvenilir yol)
   int? elapsed;
-  final periodKey = '$fid-$status';
   if (rawTs != null && rawTs > 0) {
-    // Gerçek ts var — period timer'ı güncelle
     elapsed = _totalElapsed(status, rawTs);
-    _periodStartTime[periodKey] = DateTime.now().subtract(Duration(minutes: rawTs));
-  } else if (rawTs == 0 || rawTs == null) {
-    // ts=0 veya null — period yeni başladı veya Bilyoner göndermiyoe
-    if (!_periodStartTime.containsKey(periodKey)) {
-      // İlk kez bu period'u gördük — başlangıç saatini kaydet
-      final baseMinute = switch (status) {
-        '2H' => 45, 'ET' => 90, 'BT' => 105, _ => 0,
-      };
-      _periodStartTime[periodKey] = DateTime.now().subtract(Duration(minutes: rawTs ?? 0));
-      elapsed = baseMinute;
-    } else {
-      // Daha önce kaydettik — geçen süreyi hesapla
-      final started = _periodStartTime[periodKey]!;
-      final sinceStart = DateTime.now().difference(started).inMinutes;
-      elapsed = _totalElapsed(status, sinceStart);
+  } else {
+    // ts=0 veya null → kickoff'tan hesapla
+    final kickoffTs = fixture?.kickoffTs;
+    if (kickoffTs != null && kickoffTs > 0) {
+      elapsed = _calcElapsedFromKickoff(status, kickoffTs);
     }
   }
 
@@ -382,8 +373,6 @@ void _onBilyonerData(String name, Map<String, dynamic>? v) {
     ).ignore();
     _fixtures.remove(fid);
     _nesineGuarded.remove(fid);
-    // Period timer temizle
-    _periodStartTime.removeWhere((k, _) => k.startsWith('$fid-'));
     return;
   }
 
@@ -585,12 +574,20 @@ Future<void> _loadFixtures() async {
         _fixtures[fid]!.homeScore = _int(r['home_score']) ?? _fixtures[fid]!.homeScore;
         _fixtures[fid]!.awayScore = _int(r['away_score']) ?? _fixtures[fid]!.awayScore;
       } else {
+        // kickoff timestamp'i raw_data'dan çek
+        int? kickoffTs;
+        try {
+          final rd = jsonDecode(r['raw_data'] as String? ?? '{}');
+          kickoffTs = _int(rd['fixture']?['timestamp']);
+        } catch (_) {}
+
         _fixtures[fid] = _LiveMatch(
           fixtureId: fid, homeTeam: (r['home_team'] ?? '').toString(),
           awayTeam: (r['away_team'] ?? '').toString(),
           homeScore: _int(r['home_score']) ?? 0, awayScore: _int(r['away_score']) ?? 0,
           statusShort: (r['status_short'] ?? 'NS').toString(),
           rawData: r['raw_data'] as String? ?? '{}', nesineBid: bid,
+          kickoffTs: kickoffTs,
         );
       }
       if (bid != null) { _bidToFid[bid] = fid; _nesineGuarded.add(fid); }
@@ -657,6 +654,23 @@ Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
     if (res.statusCode < 300) _writeCount++;
     else print('❌ SB $fid: ${res.statusCode}');
   } catch (e) { print('❌ SB: $e'); }
+}
+
+// Kickoff timestamp'ten anlık elapsed hesapla
+// Standart futbol: 1Y ~47dk, HT ~3dk, 2Y ~47dk
+int _calcElapsedFromKickoff(String status, int kickoffTs) {
+  final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  final sinceKickoff = ((nowTs - kickoffTs) / 60).round(); // dakika
+
+  return switch (status) {
+    '1H' => sinceKickoff.clamp(0, 52),           // max 45+7 stoppage
+    'HT' => 45,                                   // devre arası sabit
+    '2H' => (45 + (sinceKickoff - 48)).clamp(45, 97), // 48dk = 1Y+HT
+    'ET' => (90 + (sinceKickoff - 97)).clamp(90, 122), // 97dk = 1Y+HT+2Y
+    'BT' => 105,
+    'P'  => 120,
+    _    => sinceKickoff.clamp(0, 120),
+  };
 }
 
 // Period içi dakikayı toplam maç dakikasına çevir
