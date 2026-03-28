@@ -17,6 +17,13 @@ const _nesineWsUrl = 'wss://rt.nesine.com/socket.io/'
 
 const _bilyonerWsUrl = 'wss://apiwsw.bilyoner.com/ws/connect';
 
+const _bilyonerBase           = 'https://www.bilyoner.com';
+const _bilyonerPlatformToken  = '40CAB7292CD83F7EE0631FC35A0AFC75';
+const _bilyonerDeviceId       = 'C1A34687-8F75-47E8-9FF9-1D231F05782E';
+const _bilyonerAppVersion     = '3.95.2';
+const _bilyonerChromeVersion  = '146';
+const _bilyonerBrowserVersion = 'Chrome / v146.0.0.0';
+
 const Map<int, String> _nesineStMap = {
   1: '1H', 2: 'HT', 3: '2H', 4: 'ET', 5: 'BT',
   6: 'P',  7: 'FT', 8: 'AET', 9: 'PEN', 10: 'PST', 11: 'CANC',
@@ -59,15 +66,12 @@ class _LiveMatch {
   String       rawData;
   int?         nesineBid;
   int?         kickoffTs;
-  int?         secondHalfStartTs;
-  int?         extraTimeStartTs;
 
   _LiveMatch({
     required this.fixtureId, required this.homeTeam, required this.awayTeam,
     required this.homeScore, required this.awayScore,
     required this.statusShort, required this.rawData,
     this.nesineBid, this.kickoffTs,
-    this.secondHalfStartTs, this.extraTimeStartTs,
   });
 }
 
@@ -76,15 +80,108 @@ final Set<int>             _addingFids    = {};
 final Map<int, int>        _bidToFid      = {};
 final Set<int>             _nesineGuarded = {};
 
-int _nesineGoals = 0, _bilyonerUpdates = 0, _writeCount = 0;
-final Map<int, DateTime> _lastWrite        = {};
+// ── Elapsed cache: aynı dakikayı 30s içinde tekrar yazma ─────────
+final Map<int, DateTime> _lastWrite          = {};
 final Map<int, int>      _lastElapsedWritten = {};
 
+// ── HTTP elapsed rate-limit: aynı fid için 25s'de bir çek ────────
+final Map<int, DateTime> _lastElapsedFetch = {};
+
+int _nesineGoals = 0, _bilyonerUpdates = 0, _writeCount = 0;
+
+// ══════════════════════════════════════════════════════════════════
+// BİLYONER HTTP — elapsed (dakika) çekme
+// ══════════════════════════════════════════════════════════════════
+Map<String, String> _bilyonerHttpHeaders() => {
+  'accept':                   'application/json, text/plain, */*',
+  'accept-language':          'tr',
+  'accept-encoding':          'gzip, deflate, br, zstd',
+  'cache-control':            'no-cache',
+  'pragma':                   'no-cache',
+  'referer':                  '$_bilyonerBase/canli-iddaa',
+  'sec-ch-ua':                '"Chromium";v="$_bilyonerChromeVersion", "Not-A.Brand";v="24", "Google Chrome";v="$_bilyonerChromeVersion"',
+  'sec-ch-ua-mobile':         '?0',
+  'sec-ch-ua-platform':       '"macOS"',
+  'sec-fetch-dest':           'empty',
+  'sec-fetch-mode':           'cors',
+  'sec-fetch-site':           'same-origin',
+  'user-agent':               'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$_bilyonerChromeVersion.0.0.0 Safari/537.36',
+  'platform-token':           _bilyonerPlatformToken,
+  'x-client-app-version':     _bilyonerAppVersion,
+  'x-client-browser-version': _bilyonerBrowserVersion,
+  'x-client-channel':         'WEB',
+  'x-device-id':              _bilyonerDeviceId,
+};
+
+/// Bilyoner live-score HTTP endpoint'inden dakika bilgisini çek.
+/// currentScore.time → "33'" → 33, "45+2'" → 45
+/// Rate-limit: aynı fid için 25 saniyede bir.
+Future<int?> _fetchElapsed(int fid, String status) async {
+  // HT, BT, P için sabit değer — HTTP'ye gitme
+  if (status == 'HT') return 45;
+  if (status == 'BT') return 105;
+  if (status == 'P')  return 120;
+
+  // Rate-limit kontrolü
+  final lastFetch = _lastElapsedFetch[fid];
+  if (lastFetch != null &&
+      DateTime.now().difference(lastFetch).inSeconds < 25) {
+    return null; // throttle — mevcut değeri koru
+  }
+  _lastElapsedFetch[fid] = DateTime.now();
+
+  try {
+    final uri = Uri.parse(
+      '$_bilyonerBase/api/mobile/live-score/event/v2/sport-list'
+      '?eventList=1:$fid',
+    );
+    final res = await http
+        .get(uri, headers: _bilyonerHttpHeaders())
+        .timeout(const Duration(seconds: 6));
+
+    if (res.statusCode != 200) {
+      print('⚠️ elapsed HTTP [${res.statusCode}] fid=$fid');
+      return null;
+    }
+
+    final body   = jsonDecode(res.body) as Map<String, dynamic>;
+    final events = body['events'] as List? ?? [];
+    if (events.isEmpty) return null;
+
+    final ev = events.firstWhere(
+      (e) => e is Map && _int(e['sbsEventId']) == fid,
+      orElse: () => events[0],
+    );
+    if (ev == null) return null;
+
+    final cs      = (ev as Map)['currentScore'] as Map? ?? {};
+    final timeRaw = cs['time'] as String? ?? '';
+    if (timeRaw.isEmpty || timeRaw == '-') return null;
+
+    // "45+2'" → 45, "33'" → 33
+    final cleaned = timeRaw.replaceAll("'", '').trim();
+    final base    = cleaned.split('+').first.trim();
+    final parsed  = int.tryParse(base);
+
+    if (parsed != null && parsed > 0) {
+      print('   ⏱  elapsed HTTP fid=$fid: "$timeRaw" → $parsed\'');
+    }
+    return parsed;
+  } catch (e) {
+    print('⚠️ _fetchElapsed ($fid): $e');
+    return null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MAIN
+// ══════════════════════════════════════════════════════════════════
 Future<void> main() async {
   print('╔══════════════════════════════════════╗');
-  print('║  ⚡ Score Listener v8                ║');
-  print('║  📡 Nesine WS (skor) +               ║');
-  print('║  📡 Bilyoner WS (elapsed+status+skor)║');
+  print('║  ⚡ Score Listener v9                ║');
+  print('║  📡 Nesine WS (skor)                 ║');
+  print('║  📡 Bilyoner WS (status+skor)        ║');
+  print('║  📡 Bilyoner HTTP (elapsed/dakika)   ║');
   print('╚══════════════════════════════════════╝');
 
   if (_sbUrl.isEmpty || _sbKey.isEmpty) { print('❌ SUPABASE env eksik'); exit(1); }
@@ -95,7 +192,7 @@ Future<void> main() async {
       ..statusCode = 200
       ..headers.contentType = ContentType.json
       ..write(jsonEncode({
-        'ok': true, 'v': 8,
+        'ok': true, 'v': 9,
         'fixtures': _fixtures.length,
         'nesine_mapped': _bidToFid.length,
         'nesine_guarded': _nesineGuarded.length,
@@ -125,9 +222,9 @@ Future<void> main() async {
   await Completer<void>().future;
 }
 
-// ══════════════════════════════════════════════════════════════
-// BİLYONER
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// BİLYONER WS
+// ══════════════════════════════════════════════════════════════════
 Future<void> _bilyonerLoop(String name) async {
   while (true) {
     try { await _bilyonerConnect(name); } catch (e) { print('[$name] ❌ Bly $e'); }
@@ -142,28 +239,26 @@ Future<void> _bilyonerConnect(String name) async {
     Uri.parse(_bilyonerWsUrl),
     pingInterval: const Duration(seconds: 20),
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$_bilyonerChromeVersion.0.0.0 Safari/537.36',
       'Origin':                   'https://www.bilyoner.com',
       'Referer':                  'https://www.bilyoner.com/canli-iddaa',
-      'platform-token':           '40CAB7292CD83F7EE0631FC35A0AFC75',
-      'x-device-id':              'C1A34687-8F75-47E8-9FF9-1D231F05782E',
-      'x-client-app-version':     '3.95.2',
-      'x-client-browser-version': 'Chrome / v146.0.0.0',
+      'platform-token':           _bilyonerPlatformToken,
+      'x-device-id':              _bilyonerDeviceId,
+      'x-client-app-version':     _bilyonerAppVersion,
+      'x-client-browser-version': _bilyonerBrowserVersion,
       'x-client-channel':         'WEB',
     },
   );
 
   Timer? ping;
   Timer? watchdog;
-  DateTime lastMessage = DateTime.now();
 
   void send(Map<String, dynamic> m) { try { ws.sink.add(jsonEncode(m)); } catch (_) {} }
 
   void resetWatchdog() {
-    lastMessage = DateTime.now();
     watchdog?.cancel();
     watchdog = Timer(const Duration(seconds: 90), () {
-      print('[$name] ⚠️ Bilyoner 90s mesaj yok, bağlantı kesiliyor...');
+      print('[$name] ⚠️ Bilyoner 90s mesaj yok, kesiliyor...');
       ws.sink.close();
     });
   }
@@ -198,7 +293,142 @@ Future<void> _bilyonerConnect(String name) async {
   print('[$name] Bilyoner kapandı code=${ws.closeCode}');
 }
 
-// ── Bilyoner'dan gelen yeni maçı DB'ye ekle ─────────────────────
+// ── updatedMobileEventsV3: yeni maç tespiti ──────────────────────
+void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
+  if (v == null) return;
+  final event = v['event'] as Map<String, dynamic>?;
+  if (event == null) return;
+
+  final fid = _int(event['id'] ?? event['sbsEventId']);
+  if (fid == null || fid == 0) return;
+
+  final st = _int(event['st']);
+  if (st != null && st != 1) return;
+
+  if (_fixtures.containsKey(fid)) return;
+
+  final htn = event['htn'] as String? ?? '';
+  final atn = event['atn'] as String? ?? '';
+  if (htn.isEmpty || atn.isEmpty) return;
+
+  final esdl  = _int(event['esdl']) ?? 0;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  if (esdl > 0 && esdl > nowMs + 60000) return;
+
+  final syntheticV = {
+    'sbsEventId': fid,
+    'htn': htn, 'atn': atn,
+    'htpi': event['htpi'], 'atpi': event['atpi'],
+    'lgn': event['lgn'] ?? '',
+    'competitionId': event['competitionId'] ?? event['cid'],
+    'esdl': event['esdl'],
+    'periodType': 'FIRST_HALF',
+    'ts': {'hs': '0', 'as': '0', 'ts': '0'},
+  };
+
+  print('[$name] 📥 Yeni maç: fid=$fid $htn vs $atn');
+  _addMissingFixture(fid, syntheticV);
+}
+
+// ── perform-match-details-socket: skor/durum + HTTP elapsed ──────
+void _onBilyonerData(String name, Map<String, dynamic>? v) {
+  if (v == null) return;
+  final periodType = v['periodType'] as String? ?? '';
+  if (_basketballPeriods.contains(periodType)) return;
+
+  final fid = _int(v['sbsEventId']);
+  if (fid == null || fid == 0) return;
+
+  final fixture = _fixtures[fid];
+  if (fixture == null) {
+    final mappedStatus = _bilyonerPeriodMap[periodType] ?? '';
+    if (_isFinished(mappedStatus)) return;
+    final esdlRaw = _int(v['esdl']) ?? 0;
+    final nowMs   = DateTime.now().millisecondsSinceEpoch;
+    if (esdlRaw > 0 && esdlRaw > nowMs + 60000) return;
+    _addMissingFixture(fid, v);
+    return;
+  }
+
+  final ts        = v['ts'] as Map<String, dynamic>?;
+  final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
+  final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
+  final status    = _bilyonerPeriodMap[periodType] ?? fixture.statusShort;
+
+  _bilyonerUpdates++;
+  fixture.statusShort = status;
+
+  if (_isFinished(status)) {
+    print('[$name] 🏁 [BLY] fid=$fid bitti');
+    http.patch(
+      Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
+      headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'status_short': status,
+        'home_score':   homeScore,
+        'away_score':   awayScore,
+        'updated_at':   DateTime.now().toIso8601String(),
+      }),
+    ).ignore();
+    _fixtures.remove(fid);
+    _nesineGuarded.remove(fid);
+    return;
+  }
+
+  // ── Elapsed: Bilyoner HTTP endpoint'inden çek ────────────────
+  // async olarak çalıştır, WS akışını bloklamıyor
+  _fetchElapsed(fid, status).then((elapsed) {
+    final fixture2 = _fixtures[fid]; // fetch bitince fixture hâlâ var mı?
+    if (fixture2 == null) return;
+
+    // Throttle: aynı elapsed'ı 30s içinde tekrar yazma
+    final lastElapsed = _lastElapsedWritten[fid];
+    final last        = _lastWrite[fid];
+    final elapsedChanged = elapsed != null && elapsed != lastElapsed;
+    if (!elapsedChanged &&
+        last != null &&
+        DateTime.now().difference(last).inSeconds < 30) return;
+
+    _lastWrite[fid] = DateTime.now();
+    if (elapsed != null) _lastElapsedWritten[fid] = elapsed;
+
+    final isGuarded = _nesineGuarded.contains(fid);
+    final data = <String, dynamic>{
+      'status_short': status,
+      'updated_at':   DateTime.now().toIso8601String(),
+      if (elapsed != null) 'elapsed_time': elapsed,
+      if (!isGuarded) ...{
+        'home_score':   homeScore,
+        'away_score':   awayScore,
+        'score_source': 'bilyoner',
+      },
+    };
+
+    // raw_data güncelle
+    try {
+      final raw = Map<String, dynamic>.from(jsonDecode(fixture2.rawData) as Map);
+      (raw['fixture'] as Map)['status'] = {
+        'long':    _statusLong[status] ?? status,
+        'short':   status,
+        'elapsed': elapsed,
+        'extra':   null,
+      };
+      if (!isGuarded) {
+        raw['goals'] = {'home': homeScore, 'away': awayScore};
+        fixture2.homeScore = homeScore;
+        fixture2.awayScore = awayScore;
+      }
+      data['raw_data'] = jsonEncode(raw);
+      fixture2.rawData = data['raw_data'] as String;
+    } catch (_) {}
+
+    _sbPatch(fid, data);
+    print('[$name] ⏱  [BLY] fid=$fid $status ${elapsed != null ? "$elapsed'" : "??"}'
+          '${isGuarded ? "" : " $homeScore-$awayScore"}');
+  });
+}
+
+// ── Bilyoner'dan gelen yeni maçı DB'ye ekle ──────────────────────
 Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   if (_fixtures.containsKey(fid)) return;
   if (_addingFids.contains(fid)) return;
@@ -212,9 +442,9 @@ Future<void> _addMissingFixture(int fid, Map<String, dynamic> v) async {
   final compId = _int(v['competitionId'] ?? v['cid']) ?? 0;
   final esdl   = _int(v['esdl']) ?? 0;
   final periodType = v['periodType'] as String? ?? '';
-// periodType boşsa mevcut fixture durumunu koru, '1H' varsayımı yapma
-final status = _bilyonerPeriodMap[periodType] ?? '1H';
-    if (_isFinished(status) || status == 'NS') {
+  final status = _bilyonerPeriodMap[periodType] ?? '1H';
+
+  if (_isFinished(status) || status == 'NS') {
     _addingFids.remove(fid);
     return;
   }
@@ -223,30 +453,24 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
   final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
   final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
 
-  // esdl bazlı elapsed hesapla
+  // Elapsed: hemen HTTP'den çek
   int? elapsed;
-  if (esdl > 0) {
-    final kickoff = esdl > 9999999999 ? esdl ~/ 1000 : esdl;
-    final nowTs   = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final since   = ((nowTs - kickoff) / 60).round();
-    elapsed = switch (status) {
-      '1H' => since.clamp(0, 52),
-      'HT' => 45,
-      '2H' => (45 + (since - 60)).clamp(45, 97),
-      'ET' => (90 + (since - 120)).clamp(90, 122),
-      'BT' => 105,
-      'P'  => 120,
-      _    => since.clamp(0, 120),
-    };
-    if (elapsed <= 0) elapsed = null;
+  if (status == 'HT') {
+    elapsed = 45;
+  } else if (status == 'BT') {
+    elapsed = 105;
+  } else if (status == 'P') {
+    elapsed = 120;
+  } else {
+    elapsed = await _fetchElapsed(fid, status);
   }
 
   if (htn.isEmpty) { _addingFids.remove(fid); return; }
 
   final homeLogo = htpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$htpi.gif' : '';
   final awayLogo = atpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$atpi.gif' : '';
+  final tsVal    = esdl > 0 ? (esdl > 9999999999 ? esdl ~/ 1000 : esdl) : 0;
 
-  final tsVal = esdl > 0 ? esdl ~/ 1000 : 0;
   String dateStr = '';
   if (esdl > 0) {
     final utc = DateTime.fromMillisecondsSinceEpoch(esdl, isUtc: true);
@@ -321,162 +545,9 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
   }
 }
 
-// ── updatedMobileEventsV3: yeni maç tespiti ──────────────────────
-void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
-  if (v == null) return;
-  final event = v['event'] as Map<String, dynamic>?;
-  if (event == null) return;
-
-  final fid = _int(event['id'] ?? event['sbsEventId']);
-  if (fid == null || fid == 0) return;
-
-  final st = _int(event['st']);
-  if (st != null && st != 1) return;
-
-  if (_fixtures.containsKey(fid)) return;
-
-  final htn = event['htn'] as String? ?? '';
-  final atn = event['atn'] as String? ?? '';
-  if (htn.isEmpty || atn.isEmpty) return;
-
-  final esdl  = _int(event['esdl']) ?? 0;
-  final nowMs = DateTime.now().millisecondsSinceEpoch;
-  if (esdl > 0 && esdl > nowMs + 60000) return;
-
-  final syntheticV = {
-    'sbsEventId': fid,
-    'htn': htn, 'atn': atn,
-    'htpi': event['htpi'], 'atpi': event['atpi'],
-    'lgn': event['lgn'] ?? '',
-    'competitionId': event['competitionId'] ?? event['cid'],
-    'esdl': event['esdl'],
-    'periodType': 'FIRST_HALF',
-    'ts': {'hs': '0', 'as': '0', 'ts': '0'},
-  };
-
-  print('[$name] 📥 Yeni maç tespit edildi: fid=$fid $htn vs $atn esdl=${event["esdl"]} lgn=${event["lgn"]}');
-  _addMissingFixture(fid, syntheticV);
-}
-
-// ── perform-match-details-socket: skor/dakika/durum ─────────────
-void _onBilyonerData(String name, Map<String, dynamic>? v) {
-  if (v == null) return;
-  final periodType = v['periodType'] as String? ?? '';
-  if (_basketballPeriods.contains(periodType)) return;
-
-  final fid = _int(v['sbsEventId']);
-  if (fid == null || fid == 0) return;
-
-  final fixture = _fixtures[fid];
-  if (fixture == null) {
-    final mappedStatus = _bilyonerPeriodMap[periodType] ?? '';
-    if (_isFinished(mappedStatus)) return;
-
-    // Henüz başlamamış maçları ekleme
-    final esdlRaw = _int(v['esdl']) ?? 0;
-    final nowMs   = DateTime.now().millisecondsSinceEpoch;
-    if (esdlRaw > 0 && esdlRaw > nowMs + 60000) return;
-
-    _addMissingFixture(fid, v);
-    return;
-  }
-
-  final ts        = v['ts'] as Map<String, dynamic>?;
-  final homeScore = _int(ts?['hs'] ?? v['home']) ?? 0;
-  final awayScore = _int(ts?['as'] ?? v['away']) ?? 0;
-  final status = _bilyonerPeriodMap[periodType] ?? fixture.statusShort;
-
-  // time alanından direkt oku: "33'" → 33, "74'" → 74
-  int? elapsed;
-  final timeStr = v['time'] as String? ?? '';
-if (timeStr.isNotEmpty) {
-  final cleaned = timeStr.replaceAll("'", '').trim();
-  // "45+2" gibi uzatma zamanını doğru parse et
-  final base = cleaned.split('+').first.trim();
-  elapsed = int.tryParse(base);
-}
-  // time yoksa veya sayısal değilse esdl bazlı hesapla
-  if (elapsed == null || elapsed <= 0) {
-    elapsed = null;
-    final esdlRaw = _int(v['esdl']) ?? (fixture.kickoffTs != null ? fixture.kickoffTs! * 1000 : 0);
-    if (esdlRaw > 0) {
-      final kickoff = esdlRaw > 9999999999 ? esdlRaw ~/ 1000 : esdlRaw;
-      final nowTs   = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      final since   = ((nowTs - kickoff) / 60).round();
-      elapsed = switch (status) {
-        '1H' => since.clamp(0, 52),
-        'HT' => 45,
-        '2H' => (45 + (since - 60)).clamp(45, 97),
-        'ET' => (90 + (since - 120)).clamp(90, 122),
-        'BT' => 105,
-        'P'  => 120,
-        _    => since.clamp(0, 120),
-      };
-      if (elapsed <= 0) elapsed = null;
-    }
-  }
-
-  _bilyonerUpdates++;
-  fixture.statusShort = status;
-
-  if (_isFinished(status)) {
-    print('[$name] 🏁 [BLY] fid=$fid bitti');
-    http.patch(
-  Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
-  headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
-  body: jsonEncode({
-    'status_short': status,
-    'home_score':   homeScore,
-    'away_score':   awayScore,
-    'updated_at':   DateTime.now().toIso8601String(),
-  }),
-).ignore();
-    _fixtures.remove(fid);
-    _nesineGuarded.remove(fid);
-    return;
-  }
-
-  // Throttle: aynı elapsed'ı 30s içinde tekrar yazma
-  final last         = _lastWrite[fid];
-  final lastElapsed  = _lastElapsedWritten[fid];
-  final elapsedChanged = elapsed != null && elapsed != lastElapsed;
-  if (!elapsedChanged && last != null && DateTime.now().difference(last).inSeconds < 30) return;
-  _lastWrite[fid] = DateTime.now();
-  if (elapsed != null) _lastElapsedWritten[fid] = elapsed;
-
-  final isGuarded = _nesineGuarded.contains(fid);
-  final data = <String, dynamic>{
-    'status_short': status,
-    'updated_at':   DateTime.now().toIso8601String(),
-    if (elapsed != null) 'elapsed_time': elapsed,
-    if (!isGuarded) ...{
-      'home_score': homeScore, 'away_score': awayScore, 'score_source': 'bilyoner',
-    },
-  };
-
-  try {
-    final raw = Map<String, dynamic>.from(jsonDecode(fixture.rawData) as Map);
-    (raw['fixture'] as Map)['status'] = {
-      'long': _statusLong[status] ?? status, 'short': status,
-      'elapsed': elapsed, 'extra': null,
-    };
-    if (!isGuarded) {
-      raw['goals'] = {'home': homeScore, 'away': awayScore};
-      fixture.homeScore = homeScore;
-      fixture.awayScore = awayScore;
-    }
-    data['raw_data'] = jsonEncode(raw);
-    fixture.rawData  = data['raw_data'] as String;
-  } catch (_) {}
-
-  _sbPatch(fid, data);
-  print('[$name] ⏱  [BLY] fid=$fid $status $elapsed\''
-        '${isGuarded ? "" : " $homeScore-$awayScore"}');
-}
-
-// ══════════════════════════════════════════════════════════════
-// NESİNE — sadece skor
-// ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// NESİNE WS — sadece skor
+// ══════════════════════════════════════════════════════════════════
 Future<void> _nesineLoop(String name) async {
   while (true) {
     try { await _nesineConnect(name); } catch (e) { print('[$name] ❌ Nes $e'); }
@@ -550,7 +621,8 @@ int? _resolveNesine(int bid, Map item) {
     _bidToFid[bid] = best.fixtureId;
     best.nesineBid = bid;
     _nesineGuarded.add(best.fixtureId);
-    print('   🔗 Nesine bid=$bid → fid=${best.fixtureId} (${bestScore.toStringAsFixed(2)}) ${best.homeTeam} vs ${best.awayTeam}');
+    print('   🔗 Nesine bid=$bid → fid=${best.fixtureId} '
+          '(${bestScore.toStringAsFixed(2)}) ${best.homeTeam} vs ${best.awayTeam}');
     return best.fixtureId;
   }
   return null;
@@ -565,7 +637,6 @@ void _onNesineScore(String name, int bid, Map m, Map item) {
   if (fid == null) return;
   final fixture = _fixtures[fid];
   if (fixture == null) return;
-
   if (h == fixture.homeScore && a == fixture.awayScore) return;
 
   _nesineGoals++;
@@ -575,9 +646,10 @@ void _onNesineScore(String name, int bid, Map m, Map item) {
   fixture.awayScore = a;
 
   final data = <String, dynamic>{
-    'home_score': h, 'away_score': a,
+    'home_score':   h,
+    'away_score':   a,
     'score_source': 'nesine',
-    'updated_at': DateTime.now().toIso8601String(),
+    'updated_at':   DateTime.now().toIso8601String(),
   };
   try {
     final raw = Map<String, dynamic>.from(jsonDecode(fixture.rawData) as Map);
@@ -601,24 +673,23 @@ void _onNesineStatus(String name, int bid, Map item) {
   print('[$name] 📌 [NES] fid=$fid ${fixture.statusShort} → $status');
   fixture.statusShort = status;
   if (_isFinished(status)) {
-    // YENİ
-http.patch(
-  Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
-  headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
-  body: jsonEncode({
-    'status_short': status,
-    'updated_at':   DateTime.now().toIso8601String(),
-  }),
-).ignore();
+    http.patch(
+      Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid'),
+      headers: {..._sbHeaders(), 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'status_short': status,
+        'updated_at':   DateTime.now().toIso8601String(),
+      }),
+    ).ignore();
     _fixtures.remove(fid);
     _bidToFid.remove(bid);
     _nesineGuarded.remove(fid);
   }
 }
 
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
 // FIXTURES YÜKLEME
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
 Future<void> _loadFixtures() async {
   try {
     final res = await http.get(
@@ -641,15 +712,19 @@ Future<void> _loadFixtures() async {
         int? kickoffTs;
         try {
           final rd = jsonDecode(r['raw_data'] as String? ?? '{}');
-          kickoffTs = _int(rd['fixture']?['timestamp']);
+          final ts = _int(rd['fixture']?['timestamp']);
+          kickoffTs = (ts != null && ts > 0) ? ts : null;
         } catch (_) {}
 
         _fixtures[fid] = _LiveMatch(
-          fixtureId: fid, homeTeam: (r['home_team'] ?? '').toString(),
-          awayTeam: (r['away_team'] ?? '').toString(),
-          homeScore: _int(r['home_score']) ?? 0, awayScore: _int(r['away_score']) ?? 0,
+          fixtureId: fid,
+          homeTeam:  (r['home_team'] ?? '').toString(),
+          awayTeam:  (r['away_team'] ?? '').toString(),
+          homeScore: _int(r['home_score']) ?? 0,
+          awayScore: _int(r['away_score']) ?? 0,
           statusShort: (r['status_short'] ?? 'NS').toString(),
-          rawData: r['raw_data'] as String? ?? '{}', nesineBid: bid,
+          rawData:   r['raw_data'] as String? ?? '{}',
+          nesineBid: bid,
           kickoffTs: kickoffTs,
         );
       }
@@ -662,14 +737,14 @@ Future<void> _loadFixtures() async {
   } catch (e) { print('⚠️ loadFixtures: $e'); }
 }
 
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
 // STALE MAÇ TEMİZLEME
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
 Future<void> _cleanStaleMatches() async {
   try {
     final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
-          '?select=fixture_id,home_team,away_team,updated_at,status_short,score_source'
+          '?select=fixture_id,updated_at,status_short'
           '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'),
       headers: _sbHeaders(),
     ).timeout(const Duration(seconds: 10));
@@ -677,20 +752,16 @@ Future<void> _cleanStaleMatches() async {
 
     final now   = DateTime.now().toUtc();
     final stale = <int>[];
-
     for (final r in (jsonDecode(res.body) as List).cast<Map>()) {
-      final fid = _int(r['fixture_id']); if (fid == null) continue;
+      final fid        = _int(r['fixture_id']); if (fid == null) continue;
       final updatedStr = r['updated_at'] as String? ?? '';
       if (updatedStr.isEmpty) continue;
       final updated = DateTime.tryParse(updatedStr);
       if (updated == null) continue;
-      final age = now.difference(updated).inMinutes;
-      if (age > 5) stale.add(fid);
+      if (now.difference(updated).inMinutes > 5) stale.add(fid);
     }
-
     if (stale.isEmpty) return;
     print('🧹 ${stale.length} stale maç temizleniyor: $stale');
-
     for (final fid in stale) {
       try {
         await http.delete(
@@ -700,15 +771,18 @@ Future<void> _cleanStaleMatches() async {
         _fixtures.remove(fid);
         _nesineGuarded.remove(fid);
         _bidToFid.removeWhere((_, v) => v == fid);
-        print('🗑️ Stale maç silindi: fid=$fid');
+        _lastElapsedFetch.remove(fid);
+        _lastWrite.remove(fid);
+        _lastElapsedWritten.remove(fid);
+        print('🗑️ Stale silindi: fid=$fid');
       } catch (e) { print('⚠️ Stale silme ($fid): $e'); }
     }
   } catch (e) { print('⚠️ cleanStaleMatches: $e'); }
 }
 
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
 // SUPABASE
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
 Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
   try {
     final res = await http.patch(
@@ -721,42 +795,9 @@ Future<void> _sbPatch(int fid, Map<String, dynamic> data) async {
   } catch (e) { print('❌ SB: $e'); }
 }
 
-// ──────────────────────────────────────────────────────────────
-// ELAPSED HESAPLAMA
-// ──────────────────────────────────────────────────────────────
-
-/// Kickoff timestamp'ten anlık elapsed hesapla
-int _calcElapsedFromKickoff(String status, int kickoffTs) {
-  final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  final sinceKickoff = ((nowTs - kickoffTs) / 60).round();
-
-  return switch (status) {
-    '1H' => sinceKickoff.clamp(0, 52),
-    'HT' => 45,
-    '2H' => (45 + (sinceKickoff - 48)).clamp(45, 97),
-    'ET' => (90 + (sinceKickoff - 97)).clamp(90, 122),
-    'BT' => 105,
-    'P'  => 120,
-    _    => sinceKickoff.clamp(0, 120),
-  };
-}
-
-/// Period içi dakikayı toplam maç dakikasına çevir
-int _totalElapsed(String status, int periodElapsed) {
-  return switch (status) {
-    '1H'   => periodElapsed,
-    'HT'   => 45,
-    '2H'   => 45 + periodElapsed,
-    'ET'   => 90 + periodElapsed,
-    'BT'   => 105,
-    'P'    => 120,
-    _      => periodElapsed,
-  };
-}
-
-// ──────────────────────────────────────────────────────────────
-// YARDIMCI FONKSİYONLAR
-// ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+// YARDIMCI
+// ══════════════════════════════════════════════════════════════════
 bool _isFinished(String s) =>
     ['FT','AET','PEN','PST','CANC','ABD','AWD','WO'].contains(s);
 
