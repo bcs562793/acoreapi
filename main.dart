@@ -345,7 +345,7 @@ void _onBilyonerEventUpdate(String name, Map<String, dynamic>? v) {
     'ts': {'hs': '0', 'as': '0', 'ts': '0'},
   };
 
-  print('[$name] 📥 Yeni maç tespit edildi: fid=$fid $htn vs $atn esdl=${event['esdl']} lgn=${event['lgn']}');
+  print('[$name] 📥 Yeni maç tespit edildi: fid=$fid $htn vs $atn esdl=${event["esdl"]} lgn=${event["lgn"]}');
   _addMissingFixture(fid, syntheticV);
 }
 
