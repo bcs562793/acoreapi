@@ -657,7 +657,7 @@ Future<void> _cleanStaleMatches() async {
     final res = await http.get(
       Uri.parse('$_sbUrl/rest/v1/live_matches'
           '?select=fixture_id,home_team,away_team,updated_at,status_short,score_source'
-          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE,NS)'),
+          '&status_short=in.(1H,2H,HT,ET,BT,P,LIVE)'),
       headers: _sbHeaders(),
     ).timeout(const Duration(seconds: 10));
     if (res.statusCode != 200) return;
