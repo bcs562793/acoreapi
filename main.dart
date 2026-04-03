@@ -242,9 +242,6 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
 
   if (htn.isEmpty) { _addingFids.remove(fid); return; }
 
-  final homeLogo = htpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$htpi.gif' : '';
-  final awayLogo = atpi != null ? 'https://im.mackolik.com/img/logo/buyuk/$atpi.gif' : '';
-
   final tsVal = esdl > 0 ? esdl ~/ 1000 : 0;
   String dateStr = '';
   if (esdl > 0) {
@@ -279,8 +276,6 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
     'away_team':    atn,
     'home_team_id': htpi,
     'away_team_id': atpi,
-    'home_logo':    homeLogo,
-    'away_logo':    awayLogo,
     'home_score':   homeScore,
     'away_score':   awayScore,
     'status_short': status,
