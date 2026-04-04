@@ -251,6 +251,24 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
     dateStr   = '${tr.year}-${p(tr.month)}-${p(tr.day)}T${p(tr.hour)}:${p(tr.minute)}:00+03:00';
   }
 
+    // raw_data oluşturmadan önce mevcut logoyu al
+String existingHomeLogo = '';
+String existingAwayLogo = '';
+try {
+  final existing = await http.get(
+    Uri.parse('$_sbUrl/rest/v1/live_matches?fixture_id=eq.$fid&select=raw_data'),
+    headers: _sbHeaders(),
+  ).timeout(const Duration(seconds: 5));
+  if (existing.statusCode == 200) {
+    final rows = jsonDecode(existing.body) as List;
+    if (rows.isNotEmpty) {
+      final rd = jsonDecode(rows[0]['raw_data'] as String? ?? '{}');
+      existingHomeLogo = (rd['teams']?['home'] as Map?)?['logo'] as String? ?? '';
+      existingAwayLogo = (rd['teams']?['away'] as Map?)?['logo'] as String? ?? '';
+    }
+  }
+} catch (_) {}
+
   final rawData = jsonEncode({
     'fixture': {
       'id': fid, 'timestamp': tsVal, 'date': dateStr,
@@ -263,8 +281,8 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
       },
     },
     'teams': {
-      'home': {'id': htpi, 'name': htn, 'logo': '', 'winner': null},
-      'away': {'id': atpi, 'name': atn, 'logo': '', 'winner': null},
+      'home': {'id': htpi, 'name': htn, 'logo': existingHomeLogo, 'winner': null},
+      'away': {'id': atpi, 'name': atn, 'logo': existingAwayLogo, 'winner': null},
     },
     'league': {'id': compId, 'name': lgn, 'logo': '', 'country': '', 'flag': null},
     'goals': {'home': homeScore, 'away': awayScore},
