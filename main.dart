@@ -263,8 +263,8 @@ final status = _bilyonerPeriodMap[periodType] ?? '1H';
       },
     },
     'teams': {
-      'home': {'id': htpi, 'name': htn, '': homeLogo, 'winner': null},
-      'away': {'id': atpi, 'name': atn, '': awayLogo, 'winner': null},
+      'home': {'id': htpi, 'name': htn, 'logo': '', 'winner': null},
+      'away': {'id': atpi, 'name': atn, 'logo': '', 'winner': null},
     },
     'league': {'id': compId, 'name': lgn, 'logo': '', 'country': '', 'flag': null},
     'goals': {'home': homeScore, 'away': awayScore},
